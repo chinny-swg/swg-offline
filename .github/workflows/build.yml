@@ -18,7 +18,7 @@ jobs:
         working-directory: launcher
         run: python3 -m unittest discover -s tests -t . -v
       - name: Shell scripts
-        run: shellcheck server/wsl/setup.sh server/wsl/swg-offline-server core3/apply-patches.sh
+        run: shellcheck -x -P SCRIPTDIR server/wsl/setup.sh server/wsl/swg-offline-server core3/apply-patches.sh
 
   core3:
     runs-on: windows-2022
@@ -64,6 +64,8 @@ jobs:
         with:
           path: vcpkg-cache
           key: vcpkg-${{ hashFiles('core3/windows/vcpkg.json') }}-v1
+          # A changed manifest still starts from the last cache; vcpkg only builds what is new
+          restore-keys: vcpkg-
 
       - name: Restore Lua
         id: lua-cache

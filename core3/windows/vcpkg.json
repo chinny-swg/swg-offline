@@ -1,9 +1,10 @@
 {
   "name": "core3",
   "version-string": "0",
-  "description": "Libraries for the native Windows core3.exe built by .github/workflows/windows.yml",
+  "description": "Libraries for the native Windows core3.exe built by .github/workflows/build.yml",
   "dependencies": [
     "berkeleydb",
+    "boost-lockfree",
     "boost-thread",
     "openssl",
     "pthreads",
