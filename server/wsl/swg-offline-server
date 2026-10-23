@@ -1,0 +1,170 @@
+#!/bin/bash
+#
+# Boots Core3 for one offline session. Run as root inside WSL by the Windows launcher:
+#
+#   swg-offline-server --address 172.20.1.2 --overrides /mnt/c/.../overrides \
+#                      --admin-user player --admin-level 15
+#
+# Lines read on stdin are passed to the Core3 console. When stdin closes (the launcher
+# finished, or died) the server is sent "exit", which saves the world before quitting,
+# so the Berkeley DB files are never left half-written.
+#
+# Settings come from /etc/swg-offline.conf (written by setup.sh), or $SWG_OFFLINE_CONF.
+
+set -u
+
+die() {
+    echo "swg-offline: ERROR: $1" >&2
+    exit "${2:-1}"
+}
+
+log() {
+    echo "swg-offline: $*" >&2
+}
+
+CONF="${SWG_OFFLINE_CONF:-/etc/swg-offline.conf}"
+[ -f "${CONF}" ] || die "missing ${CONF}, run setup.sh first" 10
+# shellcheck source=/dev/null
+source "${CONF}"
+
+: "${RUN_USER:?RUN_USER not set in ${CONF}}"
+: "${CORE3_BIN:?CORE3_BIN not set in ${CONF}}"
+CORE3_EXE="${CORE3_EXE:-./core3}"
+MYSQL_DEFAULTS="${MYSQL_DEFAULTS:-$(getent passwd "${RUN_USER}" | cut -d: -f6)/.my.cnf}"
+DBNAME="${DBNAME:-swgemu}"
+
+ADDRESS=""
+OVERRIDES=""
+ADMIN_USER=""
+ADMIN_LEVEL=""
+KEEP_DB=false
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --address ) ADDRESS="$2"; shift ;;
+        --overrides ) OVERRIDES="$2"; shift ;;
+        --admin-user ) ADMIN_USER="$2"; shift ;;
+        --admin-level ) ADMIN_LEVEL="$2"; shift ;;
+        --keep-db ) KEEP_DB=true ;;
+        * ) die "unknown argument: $1" 11 ;;
+    esac
+    shift
+done
+
+[[ "${ADDRESS}" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || die "--address must be an IPv4 address" 11
+[ -z "${ADMIN_USER}" ] || [[ "${ADMIN_USER}" =~ ^[A-Za-z0-9_-]{1,32}$ ]] || die "invalid --admin-user" 11
+[ -z "${ADMIN_LEVEL}" ] || [[ "${ADMIN_LEVEL}" =~ ^[0-9]{1,2}$ ]] || die "invalid --admin-level" 11
+
+cd "${CORE3_BIN}" || die "cannot cd to ${CORE3_BIN}" 12
+
+if pgrep -x core3 > /dev/null; then
+    die "core3 is already running" 2
+fi
+
+mysql_run() {
+    mysql --defaults-file="${MYSQL_DEFAULTS}" "${DBNAME}" -e "$1"
+}
+
+start_db() {
+    if mysqladmin --defaults-file="${MYSQL_DEFAULTS}" ping > /dev/null 2>&1; then
+        return
+    fi
+
+    log "starting database"
+    service mariadb start > /dev/null || die "failed to start mariadb" 13
+
+    for _ in $(seq 60); do
+        mysqladmin --defaults-file="${MYSQL_DEFAULTS}" ping > /dev/null 2>&1 && return
+        sleep 1
+    done
+
+    die "mariadb did not come up" 13
+}
+
+stop_db() {
+    if ! ${KEEP_DB}; then
+        log "stopping database"
+        service mariadb stop > /dev/null
+    fi
+}
+
+install_overrides() {
+    local src="$1" name dest
+
+    for name in config-offline.lua player_manager-local.lua loot_manager-local.lua; do
+        case "${name}" in
+            config-* ) dest="conf/${name}" ;;
+            * ) dest="scripts/managers/${name}" ;;
+        esac
+
+        if [ -f "${src}/${name}" ]; then
+            # Strip CRs in case the file was written on Windows
+            tr -d '\r' < "${src}/${name}" > "${dest}" || die "failed to install ${dest}" 14
+            chown "${RUN_USER}:" "${dest}"
+        else
+            rm -f "${dest}"
+        fi
+    done
+}
+
+start_db
+
+if [ -n "${OVERRIDES}" ]; then
+    [ -d "${OVERRIDES}" ] || die "overrides dir ${OVERRIDES} not found" 14
+    install_overrides "${OVERRIDES}"
+fi
+
+mysql_run "UPDATE galaxy SET address = '${ADDRESS}';" || die "failed to set galaxy address" 15
+
+if [ -n "${ADMIN_LEVEL}" ]; then
+    # New accounts (AutoReg) get this level too, so the first login of a new install already has it
+    mysql_run "ALTER TABLE accounts ALTER admin_level SET DEFAULT ${ADMIN_LEVEL};" || die "failed to set admin level" 15
+
+    if [ -n "${ADMIN_USER}" ]; then
+        mysql_run "UPDATE accounts SET admin_level = ${ADMIN_LEVEL} WHERE username = '${ADMIN_USER}';" ||
+            die "failed to set admin level" 15
+    fi
+fi
+
+log "galaxy address ${ADDRESS}, starting core3"
+
+# core3 reads its console from a fifo we hold open, rather than straight from our stdin:
+# its reader spins on EOF, and we need to turn EOF into a clean "exit".
+FIFO="$(mktemp -u /tmp/swg-offline-console.XXXXXX)"
+mkfifo -m 600 "${FIFO}" || die "mkfifo failed" 16
+chown "${RUN_USER}:" "${FIFO}"
+
+env HOME="$(getent passwd "${RUN_USER}" | cut -d: -f6)" USER="${RUN_USER}" \
+    setpriv --reuid="${RUN_USER}" --regid="${RUN_USER}" --init-groups -- "${CORE3_EXE}" < "${FIFO}" &
+CORE3_PID=$!
+
+exec 3> "${FIFO}"
+rm -f "${FIFO}"
+
+trap 'printf "exit\n" >&3 2> /dev/null' TERM INT HUP
+
+while kill -0 "${CORE3_PID}" 2> /dev/null; do
+    if IFS= read -r -t 1 line; then
+        printf '%s\n' "${line}" >&3
+    elif [ $? -le 128 ]; then
+        # stdin closed: ask the server to save and quit, then wait for it
+        log "console closed, shutting down core3"
+        printf 'exit\n' >&3
+        break
+    fi
+done
+
+# A trapped signal interrupts wait, so keep waiting until core3 has really finished saving
+wait "${CORE3_PID}"
+STATUS=$?
+while kill -0 "${CORE3_PID}" 2> /dev/null; do
+    wait "${CORE3_PID}"
+    STATUS=$?
+done
+exec 3>&-
+
+log "core3 exited with status ${STATUS}"
+
+stop_db
+
+exit "${STATUS}"
