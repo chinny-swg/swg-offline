@@ -1,12 +1,13 @@
 """One play session: boot the server, run the client, save and stop the server."""
 
 import enum
+import os
 import subprocess
 import threading
 from pathlib import Path
 from typing import Callable, List, Optional
 
-from . import client, presets, wsl
+from . import client, native, presets, wsl
 from .server import ServerProcess
 from .settings import Settings, data_dir
 
@@ -38,7 +39,7 @@ class Session:
         self.settings = settings
         self.status = status
         self.cancelled = threading.Event()
-        self._server_args = server_args  # tests and future native builds pass their own
+        self._server_args = server_args  # tests pass their own server command
         self._start_client = start_client
         self._resolve_address = resolve_address
         self.home = home or data_dir()
@@ -80,8 +81,13 @@ class Session:
         s = self.settings
         swg_dir = Path(s.swg_dir)
 
+        backend = s.resolved_backend()
+        server_dir = s.resolved_server_dir()
+
         self.status(Stage.CHECKING, "")
         problems = s.validate() + client.check_install(swg_dir, s.client_exe)
+        if backend == "native":
+            problems += native.check_server(server_dir)
         if s.preset not in presets.PRESETS:
             problems.append(f"Unknown preset '{s.preset}'")
         if problems:
@@ -89,15 +95,26 @@ class Session:
         preset = presets.PRESETS[s.preset]
         overrides = self.home / "overrides"
         presets.render(preset, s, overrides)
-
-        address = s.address if s.address != "auto" else self._resolve_address(s.wsl_distro)
         admin_level = presets.ADMIN_LEVEL if preset.admin else 0
-        args = self._server_args or wsl.server_args(s.wsl_distro, address, overrides,
-                                                    s.account, admin_level)
+
+        if backend == "native":
+            # Same PC, so UDP on loopback just works; the galaxy row is created with 127.0.0.1
+            address = "127.0.0.1"
+            native.install(server_dir, overrides, s)
+            args = self._server_args or [str(server_dir / native.SERVER_EXE)]
+            cwd = server_dir
+            # Listen on loopback only: nothing outside the PC can connect, and no firewall prompt
+            env = dict(os.environ, CORE3_BIND_ADDRESS=address)
+        else:
+            address = s.address if s.address != "auto" else self._resolve_address(s.wsl_distro)
+            args = self._server_args or wsl.server_args(s.wsl_distro, address, overrides,
+                                                        s.account, admin_level)
+            cwd = None
+            env = None
 
         self.status(Stage.BOOTING, f"{preset.title} · {len(s.zones)} planets · {address}")
         self.server = ServerProcess(args, self.server_log,
-                                    on_line=lambda line: self.status(Stage.BOOTING, line))
+                                    on_line=lambda line: self.status(Stage.BOOTING, line), cwd=cwd, env=env)
         self.server.start()
         if not self.server.wait_ready(s.boot_timeout_seconds, self.cancelled):
             if self.cancelled.is_set():
@@ -107,6 +124,10 @@ class Session:
                                    + "\n".join(list(self.server.tail)[-12:]))
             raise SessionError(f"The server did not finish starting in {s.boot_timeout_seconds} s.")
         self.server.on_line = None
+
+        if backend == "native":
+            # The server has created its database by now
+            native.apply_admin(server_dir / native.DB_PATH, s.account, admin_level)
 
         login.apply(address, s.login_port)
         self.status(Stage.PLAYING, f"Log in as '{s.account}'. Your first login sets its password.")

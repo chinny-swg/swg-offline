@@ -1,0 +1,13 @@
+SWG Offline lets you play Pre-CU Star Wars Galaxies on this PC with no internet.
+
+It runs a private Core3 server hidden in the background while you play, and saves your galaxy when you quit. The server only listens on this PC (127.0.0.1); nothing outside it can connect.
+
+You need your own copy of the game:
+  - an SWGEmu-patched Pre-CU 14.1 client folder, with SWGEmu.exe and its .tre files.
+This installer does not include any Star Wars Galaxies files and never copies yours; it only reads them in place.
+
+Licences:
+  - The server is Core3, licensed under the GNU AGPL v3. Its source, including the changes in this build, is at https://github.com/chinny-swg/Core3
+  - The launcher's source is at https://github.com/chinny-swg/swg-offline
+
+Star Wars Galaxies is a trademark of Lucasfilm. This project is not affiliated with Lucasfilm, Disney, Daybreak or SOE.

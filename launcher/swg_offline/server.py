@@ -4,7 +4,7 @@ import collections
 import subprocess
 import threading
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable, Dict, List, Optional
 
 # Core3 prints this console prompt once boot has finished and the login server is listening
 READY_LINE = "READY"
@@ -14,8 +14,11 @@ NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 class ServerProcess:
     def __init__(self, args: List[str], log_path: Path,
-                 on_line: Optional[Callable[[str], None]] = None):
+                 on_line: Optional[Callable[[str], None]] = None, cwd: Optional[Path] = None,
+                 env: Optional[Dict[str, str]] = None):
         self.args = args
+        self.cwd = cwd
+        self.env = env
         self.log_path = log_path
         self.on_line = on_line
         self.ready = threading.Event()
@@ -28,7 +31,8 @@ class ServerProcess:
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self._proc = subprocess.Popen(
             self.args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, encoding="utf-8", errors="replace", bufsize=1, creationflags=NO_WINDOW)
+            text=True, encoding="utf-8", errors="replace", bufsize=1, creationflags=NO_WINDOW,
+            cwd=str(self.cwd) if self.cwd else None, env=self.env)
         self._reader = threading.Thread(target=self._read, name="server-console", daemon=True)
         self._reader.start()
 

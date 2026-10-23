@@ -26,6 +26,16 @@ def data_dir() -> Path:
     return Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "swg-offline"
 
 
+def installer_swg_dir() -> str:
+    """The SWG folder picked in the installer, kept in install.json next to SWGOffline.exe."""
+    from .native import default_server_dir
+    try:
+        raw = json.loads((Path(default_server_dir()).parent / "install.json").read_text(encoding="utf-8"))
+        return str(raw.get("swg_dir", ""))
+    except (OSError, ValueError, AttributeError):
+        return ""
+
+
 @dataclasses.dataclass
 class Settings:
     # Folder of the player's own SWGEmu-patched 14.1 client (holds SWGEmu.exe and the TREs)
@@ -35,6 +45,11 @@ class Settings:
     # Account name used at the client's login screen; AutoReg creates it on first login.
     # The Sandbox preset gives this account admin rights.
     account: str = "player"
+    # "native": core3.exe on SQLite from the installer; "wsl": Core3 inside WSL2 (setup.sh);
+    # "auto": native when server_dir holds core3.exe
+    backend: str = "auto"
+    # Native server folder (Core3's bin/ plus core3.exe); empty means 'server' next to the launcher
+    server_dir: str = ""
     wsl_distro: str = "Debian"
     # "auto" uses 127.0.0.1 with WSL mirrored networking, else the WSL VM's own address
     address: str = "auto"
@@ -54,17 +69,32 @@ class Settings:
             problems.append("Invalid zone names: " + ", ".join(bad))
         if not self.zones:
             problems.append("Enable at least one ground zone.")
+        if self.backend not in ("auto", "native", "wsl"):
+            problems.append(f"Unknown backend '{self.backend}'")
         return problems
+
+    def resolved_server_dir(self) -> Path:
+        from .native import default_server_dir
+        return Path(self.server_dir or default_server_dir())
+
+    def resolved_backend(self) -> str:
+        if self.backend != "auto":
+            return self.backend
+        from .native import SERVER_EXE
+        return "native" if (self.resolved_server_dir() / SERVER_EXE).is_file() else "wsl"
 
     @classmethod
     def load(cls, path: Path = None) -> "Settings":
         path = path or data_dir() / "settings.json"
+        known = {f.name for f in dataclasses.fields(cls)}
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return cls()
-        known = {f.name for f in dataclasses.fields(cls)}
-        return cls(**{k: v for k, v in raw.items() if k in known})
+            settings = cls(**{k: v for k, v in raw.items() if k in known})
+        except (OSError, ValueError, TypeError):
+            settings = cls()
+        if not settings.swg_dir:
+            settings.swg_dir = installer_swg_dir()
+        return settings
 
     def save(self, path: Path = None) -> None:
         path = path or data_dir() / "settings.json"

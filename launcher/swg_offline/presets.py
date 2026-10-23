@@ -71,7 +71,7 @@ def _lua_value(value) -> str:
     raise TypeError(f"cannot render {value!r} as Lua")
 
 
-def _lua_file(header: str, values: Dict[str, object]) -> str:
+def lua_file(header: str, values: Dict[str, object]) -> str:
     lines = [f"-- {header}", "-- Written by the SWG Offline launcher on every start; edit the launcher settings instead."]
     lines += [f"{name} = {_lua_value(value)}" for name, value in values.items()]
     return "\n".join(lines) + "\n"
@@ -90,9 +90,9 @@ def server_config(settings: Settings) -> Dict[str, object]:
 def render(preset: Preset, settings: Settings, out_dir: Path) -> List[Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     files = {
-        "config-offline.lua": _lua_file("Server config", server_config(settings)),
-        "player_manager-local.lua": _lua_file(f"Preset: {preset.title}", preset.player),
-        "loot_manager-local.lua": _lua_file(f"Preset: {preset.title}", preset.loot),
+        "config-offline.lua": lua_file("Server config", server_config(settings)),
+        "player_manager-local.lua": lua_file(f"Preset: {preset.title}", preset.player),
+        "loot_manager-local.lua": lua_file(f"Preset: {preset.title}", preset.loot),
     }
     written = []
     for name, text in files.items():
