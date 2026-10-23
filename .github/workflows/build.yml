@@ -147,8 +147,14 @@ jobs:
             $errors | ForEach-Object { $_.Line } >> $env:GITHUB_STEP_SUMMARY
             '```' >> $env:GITHUB_STEP_SUMMARY
           }
-          Get-Content build.log -Tail 60
-          if ($status -ne 0) { throw "build failed ($status)" }
+          Get-Content build.log -Tail 40
+          if ($status -ne 0) {
+            # One line per distinct error, last in the log so it is easy to fetch
+            Write-Host "===== distinct errors ====="
+            Select-String -Path build.log -Pattern "error C\d+|error LNK\d+|fatal error" |
+              ForEach-Object { $_.Line -replace '^.*?([^\\/]+\(\d+\)\s*:)', '$1' } | Sort-Object -Unique | Select-Object -First 200
+            throw "build failed ($status)"
+          }
 
       - name: Upload build log
         if: always()
