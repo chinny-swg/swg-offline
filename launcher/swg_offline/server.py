@@ -9,6 +9,11 @@ from typing import Callable, Dict, List, Optional
 # Core3 prints this console prompt once boot has finished and the login server is listening
 READY_LINE = "READY"
 
+# Core3 logs this after its final save ("database backup done"). It may not exit on its own
+# afterwards (worker threads stay parked), so this line is what "saved and stopped" means.
+CLOSED_SUFFIX = "] server closed"
+CLOSE_GRACE_SECONDS = 5
+
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
@@ -22,6 +27,7 @@ class ServerProcess:
         self.log_path = log_path
         self.on_line = on_line
         self.ready = threading.Event()
+        self.closed = threading.Event()
         self.exited = threading.Event()
         self.tail = collections.deque(maxlen=40)
         self._proc: Optional[subprocess.Popen] = None
@@ -45,6 +51,8 @@ class ServerProcess:
                 self.tail.append(line)
                 if line.strip() == READY_LINE:
                     self.ready.set()
+                if line.rstrip().endswith(CLOSED_SUFFIX):
+                    self.closed.set()
                 if self.on_line:
                     self.on_line(line)
         self._proc.stdout.close()
@@ -88,8 +96,16 @@ class ServerProcess:
             self._proc.stdin.close()
         except OSError:
             pass  # already gone; under WSL the server side turns stdin EOF into "exit" anyway
-        if self.exited.wait(timeout):
+        waited = 0.0
+        while waited < timeout and not self.exited.is_set() and not self.closed.is_set():
+            self.exited.wait(0.5)
+            waited += 0.5
+        if self.exited.is_set():
             return True
-        self._proc.kill()
-        self.exited.wait(10)
-        return False
+        saved = self.closed.is_set()
+        if saved:
+            self.exited.wait(CLOSE_GRACE_SECONDS)
+        if not self.exited.is_set():
+            self._proc.kill()
+            self.exited.wait(10)
+        return saved

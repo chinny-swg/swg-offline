@@ -2,6 +2,7 @@
 
 FAKE_CORE3_FAIL=1 makes it die during boot. FAKE_CORE3_LOG=path records the commands it got.
 FAKE_CORE3_SQLITE=path creates an accounts table there before READY, like DBType = "sqlite".
+FAKE_CORE3_HANG=1 stays alive after "server closed", as real Core3 does.
 """
 
 import os
@@ -41,6 +42,10 @@ for line in sys.stdin:
         print("saving", flush=True)
     elif cmd == "exit":
         print("[Core] database backup done", flush=True)
+        print("[Core] server closed", flush=True)
+        if os.environ.get("FAKE_CORE3_HANG"):
+            import time
+            time.sleep(600)
         sys.exit(0)
     print("\nREADY\n> ", end="", flush=True)
 

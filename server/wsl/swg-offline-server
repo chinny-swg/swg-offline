@@ -134,11 +134,27 @@ FIFO="$(mktemp -u /tmp/swg-offline-console.XXXXXX)"
 mkfifo -m 600 "${FIFO}" || die "mkfifo failed" 16
 chown "${RUN_USER}:" "${FIFO}"
 
+# core3 logs "server closed" after its final save but may not exit by itself afterwards
+# (worker threads stay parked); the flag lets us stop it once that line has been seen.
+CLOSED_FLAG="$(mktemp -u /tmp/swg-offline-closed.XXXXXX)"
+
+watch_output() {
+    local line
+
+    while IFS= read -r line || [ -n "${line}" ]; do
+        printf '%s\n' "${line}"
+
+        case "${line}" in
+            *"] server closed"* ) : > "${CLOSED_FLAG}" ;;
+        esac
+    done
+}
+
 if [ "$(id -un)" = "${RUN_USER}" ]; then
-    "${CORE3_EXE}" < "${FIFO}" &
+    "${CORE3_EXE}" < "${FIFO}" > >(watch_output) 2>&1 &
 else
     env HOME="$(getent passwd "${RUN_USER}" | cut -d: -f6)" USER="${RUN_USER}" \
-        setpriv --reuid="${RUN_USER}" --regid="${RUN_USER}" --init-groups -- "${CORE3_EXE}" < "${FIFO}" &
+        setpriv --reuid="${RUN_USER}" --regid="${RUN_USER}" --init-groups -- "${CORE3_EXE}" < "${FIFO}" > >(watch_output) 2>&1 &
 fi
 CORE3_PID=$!
 
@@ -147,25 +163,48 @@ rm -f "${FIFO}"
 
 trap 'printf "exit\n" >&3 2> /dev/null' TERM INT HUP
 
-while kill -0 "${CORE3_PID}" 2> /dev/null; do
-    if IFS= read -r -t 1 line; then
-        printf '%s\n' "${line}" >&3
-    elif [ $? -le 128 ]; then
-        # stdin closed: ask the server to save and quit, then wait for it
-        log "console closed, shutting down core3"
-        printf 'exit\n' >&3
-        break
+CLOSED_SINCE=""
+
+# Stops core3 a few seconds after it reported "server closed", if it is still there
+reap_closed() {
+    [ -e "${CLOSED_FLAG}" ] || return 0
+    CLOSED_SINCE="${CLOSED_SINCE:-${SECONDS}}"
+
+    if [ $((SECONDS - CLOSED_SINCE)) -ge 5 ] && kill -0 "${CORE3_PID}" 2> /dev/null; then
+        log "core3 saved and closed but did not exit, stopping it"
+        kill -KILL "${CORE3_PID}" 2> /dev/null
     fi
+}
+
+STDIN_OPEN=true
+
+while kill -0 "${CORE3_PID}" 2> /dev/null; do
+    if ${STDIN_OPEN}; then
+        if IFS= read -r -t 1 line; then
+            printf '%s\n' "${line}" >&3
+        elif [ $? -le 128 ]; then
+            # stdin closed: ask the server to save and quit, then wait for it
+            log "console closed, shutting down core3"
+            printf 'exit\n' >&3
+            STDIN_OPEN=false
+        fi
+    else
+        sleep 1
+    fi
+
+    reap_closed
 done
 
-# A trapped signal interrupts wait, so keep waiting until core3 has really finished saving
-wait "${CORE3_PID}"
+# 2> /dev/null: no "Killed" job notice when reap_closed had to stop it
+wait "${CORE3_PID}" 2> /dev/null
 STATUS=$?
-while kill -0 "${CORE3_PID}" 2> /dev/null; do
-    wait "${CORE3_PID}"
-    STATUS=$?
-done
 exec 3>&-
+
+if [ -e "${CLOSED_FLAG}" ]; then
+    STATUS=0
+fi
+
+rm -f "${CLOSED_FLAG}"
 
 log "core3 exited with status ${STATUS}"
 

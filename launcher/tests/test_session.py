@@ -4,6 +4,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -72,6 +73,13 @@ class SessionTest(unittest.TestCase):
         self.assertIn("globalExpMultiplier = 4.0",
                       (self.home / "overrides" / "player_manager-local.lua").read_text())
         self.assertIn("READY", (self.home / "logs" / "server.log").read_text())
+
+    def test_server_that_lingers_after_closing_is_stopped_as_saved(self):
+        with mock.patch.dict(os.environ, {"FAKE_CORE3_HANG": "1"}):
+            started = time.monotonic()
+            self.session().run()
+        self.assertEqual(self.statuses[-1][0], Stage.DONE, self.statuses[-1])
+        self.assertLess(time.monotonic() - started, 15)
 
     def test_boot_failure_reports_server_output(self):
         with mock.patch.dict(os.environ, {"FAKE_CORE3_FAIL": "1"}):

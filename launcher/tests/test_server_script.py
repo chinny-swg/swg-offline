@@ -65,6 +65,14 @@ class ServerScriptTest(unittest.TestCase):
         self.assertTrue((self.bin / "scripts" / "managers" / "player_manager-local.lua").exists())
         self.assertFalse((self.bin / "scripts" / "managers" / "loot_manager-local.lua").exists())
 
+    def test_core3_lingering_after_close_is_stopped_as_success(self):
+        self.env["FAKE_CORE3_HANG"] = "1"
+        out = self.run_script("--address", "127.0.0.1", stdin="")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("server closed", out.stdout)
+        self.assertIn("did not exit, stopping it", out.stderr)
+        self.assertIn("service mariadb stop", self.calls.read_text())
+
     def test_rejects_bad_input(self):
         self.assertEqual(self.run_script("--address", "1.2.3.4; rm -rf /").returncode, 11)
         out = self.run_script("--address", "1.2.3.4", "--admin-user", "x' OR '1'='1")
