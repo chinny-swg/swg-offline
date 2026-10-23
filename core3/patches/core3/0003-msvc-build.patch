@@ -1,0 +1,40 @@
+MSVC build: /bigobj for the generated IDL sources, set before engine3 is added, and
+PTHREAD_LIB_LINK taken from the command line or vcpkg's PThreads4W.
+
+diff --git a/MMOCoreORB/CMakeLists.txt b/MMOCoreORB/CMakeLists.txt
+index 23549fe8d3..fed989fba0 100644
+--- a/MMOCoreORB/CMakeLists.txt
++++ b/MMOCoreORB/CMakeLists.txt
+@@ -48,6 +48,13 @@ if(CMAKE_SIZEOF_VOID_P EQUAL 4)
+     message(FATAL_ERROR "32 bit compile targets are not supported")
+ endif()
+ 
++if (MSVC)
++	# Set before engine3 is added (find_package(Engine3)) so it is built the same way.
++	# Generated IDL sources exceed the default object section limit.
++	add_compile_options(/bigobj /W1)
++	add_definitions(-D_CRT_SECURE_NO_WARNINGS -D_WINSOCK_DEPRECATED_NO_WARNINGS)
++endif()
++
+ # Set up options
+ option(BUILD_IDL "Generate idl c++ sources with cmake" ON)
+ option(IDL_NOPRELOCKS "Disables all prelock annotations" OFF)
+@@ -187,10 +194,16 @@ set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
+ set(THREADS_PREFER_PTHREAD_FLAG TRUE)
+ find_package(Threads REQUIRED)
+ 
+-if(WIN32)
++if(DEFINED PTHREAD_LIB_LINK)
++	# Given on the command line
++elseif(WIN32)
++	find_package(PThreads4W QUIET) # vcpkg "pthreads"
++
+ 	string(TOLOWER ${CMAKE_BUILD_TYPE} E3_BUILD_TYPE)
+ 
+-	if(E3_BUILD_TYPE STREQUAL "debug")
++	if(PThreads4W_FOUND)
++		set(PTHREAD_LIB_LINK PThreads4W::PThreads4W)
++	elseif(E3_BUILD_TYPE STREQUAL "debug")
+ 		set(PTHREAD_LIB_LINK pthreadVCE3d)
+ 	else()
+ 		set(PTHREAD_LIB_LINK pthreadVCE3)

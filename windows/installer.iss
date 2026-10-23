@@ -1,4 +1,4 @@
-; SWG Offline installer (Inno Setup 6). Built by Core3's "Windows build" workflow:
+; SWG Offline installer (Inno Setup 6). Built by .github/workflows/build.yml:
 ;   iscc /DAppVersion=0.1.0 /DLauncherExe=...\SWGOffline.exe /DServerDir=...\core3-windows installer.iss
 ;
 ; Installs per user (no admin): the launcher, and core3.exe with Core3's bin/ as "server".

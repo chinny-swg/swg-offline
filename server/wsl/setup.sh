@@ -2,27 +2,36 @@
 #
 # One-time setup of the offline server inside WSL (Debian 11/12). Run as root:
 #
-#   ./setup.sh [--repo https://github.com/chinny-swg] [--branch unstable]
+#   ./setup.sh [--commit <sha>] [--repo https://github.com/chinny-swg]
 #
 # This is the only step that needs the internet. It:
-#   1. runs Core3's own linux/bootstrap.sh from your fork (packages, MariaDB, schema,
-#      config-local.lua, and copying the client's TRE files to /tre),
-#   2. builds Core3 (RelWithDebInfo, no core3client),
-#   3. makes config-local.lua load the launcher's conf/config-offline.lua,
-#   4. installs swg-offline-server and /etc/swg-offline.conf.
+#   1. runs Core3's own linux/bootstrap.sh at the pinned commit (core3/pin): packages, MariaDB,
+#      schema, config-local.lua, and copying the client's TRE files to /tre,
+#   2. applies swg-offline's patches (core3/patches) to that checkout, so your Core3 fork itself
+#      never needs changing,
+#   3. builds Core3 (RelWithDebInfo, no core3client),
+#   4. makes config-local.lua load the launcher's conf/config-offline.lua,
+#   5. installs swg-offline-server and /etc/swg-offline.conf.
 #
-# Re-running it is safe: bootstrap skips what exists, and the build is incremental.
+# Re-running it is safe: bootstrap skips what exists, patches already applied are skipped, and the
+# build is incremental. After the pin changes, re-running moves the checkout to the new commit.
 
 set -eu
 
-REPO_URL="https://github.com/chinny-swg"
-BRANCH="unstable"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PATCHES="${HERE}/../../core3"
+
+# shellcheck source=../../core3/pin
+source <(tr -d '\r' < "${PATCHES}/pin")
+
+REPO_URL="$(dirname "${CORE3_REPO}")"
+COMMIT="${CORE3_COMMIT}"
 SKIP_BUILD=false
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --repo ) REPO_URL="$2"; shift ;;
-        --branch ) BRANCH="$2"; shift ;;
+        --commit ) COMMIT="$2"; shift ;;
         --skip-build ) SKIP_BUILD=true ;;
         * ) echo "unknown argument: $1" >&2; exit 1 ;;
     esac
@@ -35,17 +44,16 @@ msg() {
 
 [ "$(id -u)" = 0 ] || { echo "Must run as root (wsl.exe -u root ...)" >&2; exit 1; }
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
 if ! type -P wget > /dev/null || ! type -P git > /dev/null; then
     apt-get update -qq
     apt-get install -y -qq wget git
 fi
 
-msg "Running Core3 bootstrap from ${REPO_URL}/Core3 (${BRANCH})"
+msg "Running Core3 bootstrap from ${REPO_URL}/Core3 at ${COMMIT}"
 BOOTSTRAP="$(mktemp)"
-wget -qO "${BOOTSTRAP}" "${REPO_URL/github.com/raw.githubusercontent.com}/Core3/${BRANCH}/linux/bootstrap.sh"
-REPO_PUBLIC_URL="${REPO_URL}" REPO_PUBLIC_BRANCH="${BRANCH}" bash "${BOOTSTRAP}"
+wget -qO "${BOOTSTRAP}" "${REPO_URL/github.com/raw.githubusercontent.com}/Core3/${COMMIT}/linux/bootstrap.sh"
+# bootstrap clones the repo and checks out REPO_PUBLIC_BRANCH, which may be a commit
+REPO_PUBLIC_URL="${REPO_URL}" REPO_PUBLIC_BRANCH="${COMMIT}" bash "${BOOTSTRAP}"
 rm -f "${BOOTSTRAP}"
 
 # bootstrap picks the WSL default user as RUN_USER and records it in ~/.env
@@ -57,12 +65,25 @@ CORE3_BIN="${CORE3_DIR}/MMOCoreORB/bin"
 
 [ -d "${CORE3_BIN}" ] || { echo "Core3 not found in ${CORE3_DIR}, bootstrap failed?" >&2; exit 1; }
 
+as_user() {
+    su - "${RUN_USER}" -c "set -e; $1"
+}
+
+# An existing checkout from an older pin: take our patches out, then move to the pinned commit
+if [ "$(as_user "git -C '${CORE3_DIR}' rev-parse HEAD")" != "$(as_user "git -C '${CORE3_DIR}' rev-parse '${COMMIT}^{commit}' 2> /dev/null || echo none")" ]; then
+    msg "Moving ${CORE3_DIR} to ${COMMIT}"
+    as_user "git -C '${CORE3_DIR}' submodule update --init --recursive"
+    as_user "bash '${PATCHES}/apply-patches.sh' --reverse '${CORE3_DIR}'"
+    as_user "git -C '${CORE3_DIR}' fetch --quiet origin && git -C '${CORE3_DIR}' checkout --quiet '${COMMIT}'"
+fi
+
+msg "Applying swg-offline patches"
+as_user "git -C '${CORE3_DIR}' submodule update --init --recursive"
+as_user "bash '${PATCHES}/apply-patches.sh' '${CORE3_DIR}'"
+
 if ! ${SKIP_BUILD}; then
     msg "Building Core3 as ${RUN_USER} (this takes a while)"
-    su - "${RUN_USER}" -c "set -e
-        cd '${CORE3_DIR}'
-        git submodule update --init --recursive
-        cd MMOCoreORB
+    as_user "cd '${CORE3_DIR}/MMOCoreORB'
         make build-ninja-debugoptimized CMAKE_ARGS='-DENABLE_BUILD_CLIENT=OFF'"
 fi
 

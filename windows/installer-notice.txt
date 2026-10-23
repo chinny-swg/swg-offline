@@ -7,7 +7,7 @@ You need your own copy of the game:
 This installer does not include any Star Wars Galaxies files and never copies yours; it only reads them in place.
 
 Licences:
-  - The server is Core3, licensed under the GNU AGPL v3. Its source, including the changes in this build, is at https://github.com/chinny-swg/Core3
+  - The server is Core3, licensed under the GNU AGPL v3: https://github.com/chinny-swg/Core3 at the commit in core3/pin of https://github.com/chinny-swg/swg-offline, with the patches in that repo's core3/ folder applied.
   - The launcher's source is at https://github.com/chinny-swg/swg-offline
 
 Star Wars Galaxies is a trademark of Lucasfilm. This project is not affiliated with Lucasfilm, Disney, Daybreak or SOE.

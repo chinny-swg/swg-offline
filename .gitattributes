@@ -2,3 +2,5 @@
 server/wsl/* text eol=lf
 *.bat text eol=crlf
 *.cmd text eol=crlf
+*.patch -text
+core3/pin text eol=lf

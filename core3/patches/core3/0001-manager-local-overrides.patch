@@ -1,0 +1,47 @@
+Load optional scripts/managers/player_manager-local.lua and loot_manager-local.lua after the stock
+manager scripts, like conf/config-local.lua. The launcher's play-style presets live in these files.
+Parse errors in an override are printed; a missing override is ignored.
+
+diff --git a/MMOCoreORB/.gitignore b/MMOCoreORB/.gitignore
+index afb7f24b21..74f8a7a22e 100644
+--- a/MMOCoreORB/.gitignore
++++ b/MMOCoreORB/.gitignore
+@@ -50,3 +50,4 @@ build.out.prev
+ bin/screenlog*
+ compile_commands.json
+ .env*
++bin/scripts/managers/*-local.lua
+diff --git a/MMOCoreORB/bin/scripts/managers/loot_manager.lua b/MMOCoreORB/bin/scripts/managers/loot_manager.lua
+index 4f7e36d463..095b225585 100644
+--- a/MMOCoreORB/bin/scripts/managers/loot_manager.lua
++++ b/MMOCoreORB/bin/scripts/managers/loot_manager.lua
+@@ -852,3 +852,12 @@ jediCrystalStats = {
+ 		maxWoundChance = 4,
+ 	}
+ }
++
++-- Optional per-install overrides, parsed after this file like conf/config-local.lua (not tracked in git)
++local localOverrides, localError = loadfile("scripts/managers/loot_manager-local.lua")
++
++if localOverrides ~= nil then
++	localOverrides()
++elseif not string.find(localError, "cannot open", 1, true) then
++	print(localError)
++end
+diff --git a/MMOCoreORB/bin/scripts/managers/player_manager.lua b/MMOCoreORB/bin/scripts/managers/player_manager.lua
+index 8b29984857..e499b4c27c 100644
+--- a/MMOCoreORB/bin/scripts/managers/player_manager.lua
++++ b/MMOCoreORB/bin/scripts/managers/player_manager.lua
+@@ -209,3 +209,12 @@ jukeboxSongs = {
+ 	{ "@event_perk_jukebox_songs:eerie_ambiance", "sound/music_underwater_loop.snd" },
+ 	{ "@event_perk_jukebox_songs:lok_theme", "sound/music_gloom_a_loop.snd" }
+ }
++
++-- Optional per-install overrides, parsed after this file like conf/config-local.lua (not tracked in git)
++local localOverrides, localError = loadfile("scripts/managers/player_manager-local.lua")
++
++if localOverrides ~= nil then
++	localOverrides()
++elseif not string.find(localError, "cannot open", 1, true) then
++	print(localError)
++end

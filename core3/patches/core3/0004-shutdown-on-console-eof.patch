@@ -1,0 +1,37 @@
+ShutdownOnConsoleEOF = 1: save and shut down when stdin closes, so a server a launcher runs
+hidden is still saved if the launcher goes away. Off by default.
+
+diff --git a/MMOCoreORB/bin/conf/config.lua b/MMOCoreORB/bin/conf/config.lua
+index eb03618339..dfe323ab42 100644
+--- a/MMOCoreORB/bin/conf/config.lua
++++ b/MMOCoreORB/bin/conf/config.lua
+@@ -244,6 +244,7 @@ Core3 = {
+ 	UnloadContainers = 1, -- Whether to unload container contents from RAM after the container hasn't been accessed for a time
+ 
+ 	------Server Config------
++	ShutdownOnConsoleEOF = 0, -- 1: save and shut down when stdin closes (a launcher running the server hidden went away)
+ 	CharacterBuilderEnabled = "true",
+ 	AutoReg = 1,
+ 
+diff --git a/MMOCoreORB/src/server/ServerCore.cpp b/MMOCoreORB/src/server/ServerCore.cpp
+index 7089affcb2..f03e665c6c 100644
+--- a/MMOCoreORB/src/server/ServerCore.cpp
++++ b/MMOCoreORB/src/server/ServerCore.cpp
+@@ -1201,8 +1201,16 @@ void coredetail::ConsoleReaderService::run() {
+ 
+ 		res = fgets(line, sizeof(line), stdin);
+ 
+-		if (!res)
++		if (!res) {
++			// A launcher that owns our stdin has gone away: save and shut down rather than run on unattended
++			if (feof(stdin) && ConfigManager::instance()->getBool("Core3.ShutdownOnConsoleEOF", false)) {
++				Logger::console.info(true) << "Console input closed, shutting down (ShutdownOnConsoleEOF)";
++				core->queueConsoleCommand("exit");
++				break;
++			}
++
+ 			continue;
++		}
+ 
+ 		auto cmd = String(line).trim();
+ 

@@ -1,0 +1,1297 @@
+SQLite database backend (Core3.DBType = "sqlite", Core3.DBPath): a single-file database
+created with its schema and galaxy row on first start, so one-PC installs need no MySQL/MariaDB.
+SqliteDialect lets Core3's MySQL-flavoured SQL run unchanged (string escapes, TRUNCATE, NOW(),
+UNIX_TIMESTAMP(), ADDTIME()). CMake gains ENABLE_MYSQL / ENABLE_SQLITE; MySQL code is behind
+WITH_MYSQL so a build can leave MySQL out. PlayerCreationManager's UNION query drops parentheses
+SQLite rejects (same result on MySQL).
+
+diff --git a/MMOCoreORB/CMakeLists.txt b/MMOCoreORB/CMakeLists.txt
+index f0cd8ac450..23549fe8d3 100644
+--- a/MMOCoreORB/CMakeLists.txt
++++ b/MMOCoreORB/CMakeLists.txt
+@@ -63,6 +63,8 @@ option(ENABLE_OMIT_FRAMEPOINTER "Enables -fno-omit-frame-pointer compiler option
+ option(ENABLE_ERROR_ON_WARNINGS "Enables -Werror compiler option" ON)
+ option(ENABLE_REST_SERVER "Enables REST API Server" OFF)
+ option(ENABLE_SWGREALMS "Enables SWGRealms API support" OFF)
++option(ENABLE_MYSQL "Enables the MySQL/MariaDB database backend (Core3.DBType = \"mysql\")" ON)
++option(ENABLE_SQLITE "Enables the SQLite database backend (Core3.DBType = \"sqlite\") if SQLite3 is found" ON)
+ option(ENABLE_ODB "Enables odb3 compiling" OFF)
+ option(ENABLE_ODB_REFERENCES "Sets ODB_REFERENCES define" ON) #needs to match engine3
+ option(ENABLE_BUILD_CLIENT "Enables core3client build" ON)
+@@ -85,8 +87,32 @@ find_package(Lua "5.3" EXACT REQUIRED)
+ include_directories(${LUA_INCLUDE_DIR})
+ 
+ # Find mysql includes and libraries
+-find_package(MySql REQUIRED)
+-#include_directories(${MYSQL_INCLUDE_DIR}) already included in find
++if (ENABLE_MYSQL)
++	find_package(MySql REQUIRED)
++	#include_directories(${MYSQL_INCLUDE_DIR}) already included in find
++	add_definitions(-DWITH_MYSQL)
++else ()
++	set(MYSQL_LIB "")
++endif ()
++
++# Find sqlite includes and libraries
++set(SQLITE_LIB "")
++
++if (ENABLE_SQLITE)
++	find_package(SQLite3)
++
++	if (SQLite3_FOUND)
++		include_directories(${SQLite3_INCLUDE_DIRS})
++		set(SQLITE_LIB ${SQLite3_LIBRARIES})
++		add_definitions(-DWITH_SQLITE)
++	else ()
++		message(STATUS "SQLite3 not found, the sqlite database backend is disabled")
++	endif ()
++endif ()
++
++if (NOT ENABLE_MYSQL AND "${SQLITE_LIB}" STREQUAL "")
++	message(FATAL_ERROR "No database backend: enable ENABLE_MYSQL or install SQLite3 for ENABLE_SQLITE")
++endif ()
+ 
+ # Find berkeley includes and libraries
+ find_package(Berkeley REQUIRED)
+diff --git a/MMOCoreORB/bin/conf/config.lua b/MMOCoreORB/bin/conf/config.lua
+index 62e71e9a40..eb03618339 100644
+--- a/MMOCoreORB/bin/conf/config.lua
++++ b/MMOCoreORB/bin/conf/config.lua
+@@ -55,6 +55,8 @@ Core3 = {
+ 	ORBPort = 44419,
+ 
+ 	------Main Database Config------
++	DBType = "mysql", -- "mysql", or "sqlite" for a single-file database with no separate server (one-PC installs)
++	DBPath = "databases/swgemu.sqlite3", -- sqlite only: created with its schema on first start
+ 	DBHost = "127.0.0.1",
+ 	DBPort = 3306,
+ 	DBName = "swgemu",
+diff --git a/MMOCoreORB/src/CMakeLists.txt b/MMOCoreORB/src/CMakeLists.txt
+index dc1cf1a45b..fb79f460fb 100644
+--- a/MMOCoreORB/src/CMakeLists.txt
++++ b/MMOCoreORB/src/CMakeLists.txt
+@@ -137,7 +137,7 @@ target_link_libraries(core3
+ 	engine3
+ 	${gmock_libs}
+ 	${Boost_LIBRARIES}
+-	${GCCLIBATOMIC_LIBRARY} ${PTHREAD_LIB_LINK} ${MYSQL_LIB}
++	${GCCLIBATOMIC_LIBRARY} ${PTHREAD_LIB_LINK} ${MYSQL_LIB} ${SQLITE_LIB}
+ 	${LUA_LIBRARIES}
+ 	${DB_LIBRARIES} ${OPENSSL_LIBRARIES}
+ 	${ZLIB_LIBRARIES} ${CMAKE_DL_LIBS})
+@@ -155,7 +155,7 @@ if(ENABLE_ODB)
+ 		engine3
+ 		${gmock_libs} ${Boost_LIBRARIES}
+ 		${GCCLIBATOMIC_LIBRARY} ${PTHREAD_LIB_LINK}
+-		${MYSQL_LIB} ${LUA_LIBRARIES}
++		${MYSQL_LIB} ${SQLITE_LIB} ${LUA_LIBRARIES}
+ 		${DB_LIBRARIES} ${OPENSSL_LIBRARIES}
+ 		${ZLIB_LIBRARIES} ${CMAKE_DL_LIBS})
+ 
+diff --git a/MMOCoreORB/src/client/CMakeLists.txt b/MMOCoreORB/src/client/CMakeLists.txt
+index d042fa6c1f..909041cf77 100644
+--- a/MMOCoreORB/src/client/CMakeLists.txt
++++ b/MMOCoreORB/src/client/CMakeLists.txt
+@@ -13,7 +13,7 @@ add_executable(core3client ${core3client_sources} ${core3client_headers})
+ 
+ add_dependencies(core3client engine3)
+ 
+-target_link_libraries(core3client engine3 ${Boost_LIBRARIES} ${ZLIB_LIBRARIES} ${GCCLIBATOMIC_LIBRARY} ${PTHREAD_LIB_LINK} ${MYSQL_LIB} ${LUA_LIBRARIES} ${DB_LIBRARIES} ${CMAKE_DL_LIBS} ${OPENSSL_LIBRARIES})
++target_link_libraries(core3client engine3 ${Boost_LIBRARIES} ${ZLIB_LIBRARIES} ${GCCLIBATOMIC_LIBRARY} ${PTHREAD_LIB_LINK} ${MYSQL_LIB} ${SQLITE_LIB} ${LUA_LIBRARIES} ${DB_LIBRARIES} ${CMAKE_DL_LIBS} ${OPENSSL_LIBRARIES})
+ 
+ if (NOT ENABLE_ASAN AND NOT ENABLE_TSAN AND NOT ENABLE_UBSAN AND JEMALLOC_FOUND AND ENABLE_JEMALLOC_LINK)
+ 	target_link_libraries(core3client ${JEMALLOC_LIBRARIES})
+diff --git a/MMOCoreORB/src/conf/ConfigManager.h b/MMOCoreORB/src/conf/ConfigManager.h
+index 49ff89070e..f01b4bc1f7 100644
+--- a/MMOCoreORB/src/conf/ConfigManager.h
++++ b/MMOCoreORB/src/conf/ConfigManager.h
+@@ -366,6 +366,16 @@ namespace conf {
+ 			return getString("Core3.DBName", "swgemu");
+ 		}
+ 
++		// "mysql" (default) or "sqlite"
++		inline const String& getDBType() {
++			return getString("Core3.DBType", "mysql");
++		}
++
++		// SQLite database file, relative to bin/
++		inline const String& getDBPath() {
++			return getString("Core3.DBPath", "databases/swgemu.sqlite3");
++		}
++
+ 		inline const String& getDBUser() {
+ 			return getString("Core3.DBUser", "root");
+ 		}
+diff --git a/MMOCoreORB/src/server/ServerCore.cpp b/MMOCoreORB/src/server/ServerCore.cpp
+index 86e5fd7761..7089affcb2 100644
+--- a/MMOCoreORB/src/server/ServerCore.cpp
++++ b/MMOCoreORB/src/server/ServerCore.cpp
+@@ -620,20 +620,28 @@ public:
+ };
+ 
+ void ServerCore::finalizeContext() {
++#ifdef WITH_MYSQL
+ 	server::db::mysql::MySqlDatabase::finalizeLibrary();
++#endif // WITH_MYSQL
+ }
+ 
+ void ServerCore::initializeCoreContext() {
++#ifdef WITH_MYSQL
+ 	server::db::mysql::MySqlDatabase::initializeLibrary();
++#endif // WITH_MYSQL
+ 
+ 	class ThreadHook : public ThreadInitializer {
+ 	public:
+ 		void onThreadStart(Thread* thread) final {
++#ifdef WITH_MYSQL
+ 			server::db::mysql::MySqlDatabase::onThreadStart();
++#endif // WITH_MYSQL
+ 		}
+ 
+ 		void onThreadEnd(Thread* thread) final {
++#ifdef WITH_MYSQL
+ 			server::db::mysql::MySqlDatabase::onThreadEnd();
++#endif // WITH_MYSQL
+ 		}
+ 	};
+ 
+diff --git a/MMOCoreORB/src/server/db/MantisDatabase.cpp b/MMOCoreORB/src/server/db/MantisDatabase.cpp
+index 2520176517..836a29c265 100644
+--- a/MMOCoreORB/src/server/db/MantisDatabase.cpp
++++ b/MMOCoreORB/src/server/db/MantisDatabase.cpp
+@@ -27,6 +27,10 @@ MantisDatabase::MantisDatabase(ConfigManager* configManager) {
+ 	if (dbHost.isEmpty())
+ 		return;
+ 
++#ifndef WITH_MYSQL
++	Logger::console.error("MantisHost is set but this build has no MySQL support (ENABLE_MYSQL), bug reports are disabled");
++#else
++
+ 	for (int i = 0; i < DEFAULT_SERVERDATABASE_INSTANCES; ++i) {
+ 		Database* db = nullptr;
+ 
+@@ -42,6 +46,7 @@ MantisDatabase::MantisDatabase(ConfigManager* configManager) {
+ 			db = nullptr;
+ 		}
+ 	}
++#endif // WITH_MYSQL
+ }
+ 
+ MantisDatabase::~MantisDatabase() {
+diff --git a/MMOCoreORB/src/server/db/MySqlDatabase.cpp b/MMOCoreORB/src/server/db/MySqlDatabase.cpp
+index 511e064499..99887996d9 100755
+--- a/MMOCoreORB/src/server/db/MySqlDatabase.cpp
++++ b/MMOCoreORB/src/server/db/MySqlDatabase.cpp
+@@ -3,6 +3,8 @@ Copyright (C) 2007 <SWGEmu>. All rights reserved.
+ Distribution of this file for usage outside of Core3 is prohibited.
+ */
+ 
++#ifdef WITH_MYSQL
++
+ #include "engine/db/mysql/MysqlDatabaseManager.h"
+ 
+ #include "engine/engine.h"
+@@ -292,3 +294,5 @@ void MySqlDatabase::onThreadStart() {
+ void MySqlDatabase::onThreadEnd() {
+ 	mysql_thread_end();
+ }
++
++#endif // WITH_MYSQL
+diff --git a/MMOCoreORB/src/server/db/MySqlDatabase.h b/MMOCoreORB/src/server/db/MySqlDatabase.h
+index 7dd1a21fb8..3af47c7113 100755
+--- a/MMOCoreORB/src/server/db/MySqlDatabase.h
++++ b/MMOCoreORB/src/server/db/MySqlDatabase.h
+@@ -3,6 +3,8 @@ Copyright (C) 2007 <SWGEmu>. All rights reserved.
+ Distribution of this file for usage outside of Core3 is prohibited.
+ */
+ 
++#ifdef WITH_MYSQL
++
+ #ifndef MYSQLDATABASE_H_
+ #define MYSQLDATABASE_H_
+ 
+@@ -88,3 +90,5 @@ namespace server {
+ } // namespace engine
+ 
+ #endif /*MYSQLDATABASE_H_*/
++
++#endif // WITH_MYSQL
+diff --git a/MMOCoreORB/src/server/db/ResultSet.h b/MMOCoreORB/src/server/db/ResultSet.h
+index 3793ca5029..fbd3d31411 100755
+--- a/MMOCoreORB/src/server/db/ResultSet.h
++++ b/MMOCoreORB/src/server/db/ResultSet.h
+@@ -3,6 +3,8 @@ Copyright (C) 2007 <SWGEmu>. All rights reserved.
+ Distribution of this file for usage outside of Core3 is prohibited.
+ */
+ 
++#ifdef WITH_MYSQL
++
+ #ifndef ENGINE_DB_MYSQL_RESULTSET_H_
+ #define ENGINE_DB_MYSQL_RESULTSET_H_
+ 
+@@ -82,3 +84,5 @@ namespace server {
+ } // namespace engine
+ 
+ #endif /*ENGINE_DB_MYSQL_RESULTSET_H_*/
++
++#endif // WITH_MYSQL
+diff --git a/MMOCoreORB/src/server/db/Row.h b/MMOCoreORB/src/server/db/Row.h
+index 183eb10f84..d0d2389613 100755
+--- a/MMOCoreORB/src/server/db/Row.h
++++ b/MMOCoreORB/src/server/db/Row.h
+@@ -3,6 +3,8 @@ Copyright (C) 2007 <SWGEmu>. All rights reserved.
+ Distribution of this file for usage outside of Core3 is prohibited.
+ */
+ 
++#ifdef WITH_MYSQL
++
+ #ifndef ROW_H_
+ #define ROW_H_
+ 
+@@ -28,3 +30,5 @@ namespace server {
+ using namespace engine::db::mysql;
+ 
+ #endif /*ROW_H_*/
++
++#endif // WITH_MYSQL
+diff --git a/MMOCoreORB/src/server/db/ServerDatabase.cpp b/MMOCoreORB/src/server/db/ServerDatabase.cpp
+index d618ab26e0..9a6afa8dba 100644
+--- a/MMOCoreORB/src/server/db/ServerDatabase.cpp
++++ b/MMOCoreORB/src/server/db/ServerDatabase.cpp
+@@ -7,6 +7,7 @@
+ 
+ #include "conf/ConfigManager.h"
+ #include "MySqlDatabase.h"
++#include "SqliteDatabase.h"
+ 
+ Vector<Database*>* ServerDatabase::databases = nullptr;
+ AtomicInteger ServerDatabase::currentDB;
+@@ -18,17 +19,39 @@ ServerDatabase::ServerDatabase(ConfigManager* configManager) {
+ 	const String& dbName = configManager->getDBName();
+ 	const int     dbPort = configManager->getDBPort();
+ 
+-	setLoggingName("ServerDatabase " + dbHost + ":" + String::valueOf(dbPort));
+-
+ 	databases = new Vector<Database*>();
+ 
+-	const static int DEFAULT_SERVERDATABASE_INSTANCES = configManager->getInt("Core3.DBInstances", 1);
++	if (configManager->getDBType() == "sqlite") {
++#ifdef WITH_SQLITE
++		const String& dbPath = configManager->getDBPath();
++
++		setLoggingName("ServerDatabase " + dbPath);
+ 
+-	for (int i = 0; i < DEFAULT_SERVERDATABASE_INSTANCES; ++i) {
+-		Database* db = new server::db::mysql::MySqlDatabase(String("MySqlDatabase" + String::valueOf(i)), dbHost);
++		// One connection: SQLite serializes writers anyway
++		Database* db = new server::db::sqlite::SqliteDatabase("SqliteDatabase", dbPath);
+ 		db->connect(dbName, dbUser, dbPass, dbPort);
+ 
+ 		databases->add(db);
++
++		seedGalaxy(configManager);
++#else
++		fatal("Core3.DBType is \"sqlite\" but this build has no SQLite support (ENABLE_SQLITE)");
++#endif
++	} else {
++#ifdef WITH_MYSQL
++		setLoggingName("ServerDatabase " + dbHost + ":" + String::valueOf(dbPort));
++
++		const static int DEFAULT_SERVERDATABASE_INSTANCES = configManager->getInt("Core3.DBInstances", 1);
++
++		for (int i = 0; i < DEFAULT_SERVERDATABASE_INSTANCES; ++i) {
++			Database* db = new server::db::mysql::MySqlDatabase(String("MySqlDatabase" + String::valueOf(i)), dbHost);
++			db->connect(dbName, dbUser, dbPass, dbPort);
++
++			databases->add(db);
++		}
++#else
++		fatal("Core3.DBType is \"" + configManager->getDBType() + "\" but this build has no MySQL support (ENABLE_MYSQL); use \"sqlite\"");
++#endif
+ 	}
+ 
+ 	try {
+@@ -61,6 +84,23 @@ ServerDatabase::~ServerDatabase() {
+ 	databases = nullptr;
+ }
+ 
++void ServerDatabase::seedGalaxy(ConfigManager* configManager) {
++	// A new SQLite database has no galaxy row yet (MySQL installs get it from sql/swgemu.sql)
++	const int galaxyID = configManager->getZoneGalaxyID();
++	const int zonePort = configManager->getZoneServerPort();
++
++	StringBuffer query;
++	query << "INSERT INTO galaxy (galaxy_id, name, address, port, pingport, population)"
++		<< " SELECT " << galaxyID << ", 'Core3', '127.0.0.1', " << (zonePort != 0 ? zonePort : 44463)
++		<< ", " << configManager->getPingPort() << ", 0"
++		<< " WHERE NOT EXISTS (SELECT 1 FROM galaxy WHERE galaxy_id = " << galaxyID << ")";
++
++	UniqueReference<ResultSet*> result(instance()->executeQuery(query));
++
++	if (result != nullptr && result->getRowsAffected() > 0)
++		info(true) << "Created galaxy " << galaxyID;
++}
++
+ void ServerDatabase::alterDatabase(int nextSchemaVersion, const String& alterSql) {
+ 	if (dbSchemaVersion >= nextSchemaVersion)
+ 		return;
+diff --git a/MMOCoreORB/src/server/db/ServerDatabase.h b/MMOCoreORB/src/server/db/ServerDatabase.h
+index d120c80077..e77b890ab1 100644
+--- a/MMOCoreORB/src/server/db/ServerDatabase.h
++++ b/MMOCoreORB/src/server/db/ServerDatabase.h
+@@ -34,6 +34,7 @@ public:
+ 		return dbSchemaVersion;
+ 	}
+ private:
++	void seedGalaxy(conf::ConfigManager* configManager);
+ 	void alterDatabase(int nextVersion, const String& alterSql);
+ 	void updateDatabaseSchema();
+ };
+diff --git a/MMOCoreORB/src/server/db/SqliteDatabase.cpp b/MMOCoreORB/src/server/db/SqliteDatabase.cpp
+new file mode 100644
+index 0000000000..c551bbd9f6
+--- /dev/null
++++ b/MMOCoreORB/src/server/db/SqliteDatabase.cpp
+@@ -0,0 +1,240 @@
++/*
++				Copyright <SWGEmu>
++		See file COPYING for copying conditions.*/
++
++#ifdef WITH_SQLITE
++
++#include "engine/engine.h"
++
++#include "engine/core/Task.h"
++
++#include <sqlite3.h>
++
++#include "SqliteDatabase.h"
++#include "SqliteDialect.h"
++#include "SqliteSchema.h"
++
++using namespace server::db::sqlite;
++
++namespace {
++
++class SqliteTask final : public Task {
++	SqliteDatabase* database;
++	String query;
++
++public:
++	SqliteTask(SqliteDatabase* db, const String& q) : database(db), query(q) {
++	}
++
++	void run() final {
++		try {
++			database->doExecuteStatement(query);
++		} catch (const Exception& e) {
++			// already logged by SqliteDatabase::error()
++		}
++	}
++};
++
++} // namespace
++
++const char* SqliteDatabase::sqliteThreadName = "sqliteThread";
++
++int SqliteDatabase::createDatabaseThread() {
++	Core::getTaskManager()->initializeCustomQueue(sqliteThreadName, 1, false);
++
++	return 0;
++}
++
++SqliteDatabase::SqliteDatabase(const String& name, const String& path) : Mutex("SQLITE DB"), Logger(name), db(nullptr), path(path) {
++	setLockTracing(false);
++}
++
++SqliteDatabase::~SqliteDatabase() {
++	close();
++}
++
++void SqliteDatabase::connect(const String&, const String&, const String&, int) {
++	static int databaseThread = createDatabaseThread();
++
++	fatal(!databaseThread) << "could not create sqlite database thread";
++
++	{
++		Locker locker(this);
++
++		int slash = path.lastIndexOf('/');
++
++		if (slash > 0)
++			File::mkpath(path.subString(0, slash));
++
++		info(true) << "opening " << path;
++
++		if (sqlite3_open_v2(path.toCharArray(), &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr) != SQLITE_OK)
++			error("open");
++
++		sqlite3_busy_timeout(db, 5000);
++
++		if (registerMySqlFunctions(db) != SQLITE_OK)
++			error("register functions");
++	}
++
++	// executeQuery() takes the lock itself
++	UniqueReference<engine::db::ResultSet*> journal(executeQuery("PRAGMA journal_mode = WAL"));
++	UniqueReference<engine::db::ResultSet*> sync(executeQuery("PRAGMA synchronous = NORMAL"));
++	UniqueReference<engine::db::ResultSet*> tables(executeQuery("SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'accounts'"));
++
++	if (tables->next() && tables->getInt(0) == 0)
++		createSchema();
++}
++
++void SqliteDatabase::createSchema() {
++	info(true) << "creating schema version " << SCHEMA_VERSION << " in " << path;
++
++	UniqueReference<engine::db::ResultSet*> begin(executeQuery("BEGIN"));
++
++	try {
++		for (auto statement : SCHEMA_STATEMENTS) {
++			UniqueReference<engine::db::ResultSet*> result(executeQuery(statement));
++		}
++
++		UniqueReference<engine::db::ResultSet*> version(executeQuery("INSERT INTO db_metadata (schema_version) VALUES (" + String::valueOf(SCHEMA_VERSION) + ")"));
++		UniqueReference<engine::db::ResultSet*> commit(executeQuery("COMMIT"));
++	} catch (const Exception& e) {
++		sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
++		throw;
++	}
++}
++
++void SqliteDatabase::doExecuteStatement(const String& statement) {
++	UniqueReference<engine::db::ResultSet*> result(executeQuery(statement));
++}
++
++void SqliteDatabase::executeStatement(const char* statement) {
++	Reference<Task*> task = new SqliteTask(this, statement);
++	task->setCustomTaskQueue(sqliteThreadName);
++	task->execute();
++}
++
++void SqliteDatabase::executeStatement(const String& statement) {
++	executeStatement(statement.toCharArray());
++}
++
++void SqliteDatabase::executeStatement(const StringBuffer& statement) {
++	executeStatement(statement.toString().toCharArray());
++}
++
++engine::db::ResultSet* SqliteDatabase::executeQuery(const char* statement) {
++	Locker locker(this);
++
++	if (db == nullptr)
++		throw DatabaseException("sqlite database " + path + " is not open");
++
++	const std::string sql = translateMySql(statement);
++
++	std::vector<std::vector<std::string>> rows;
++	std::vector<std::vector<bool>> nulls;
++	sys::uint64 affected = 0;
++
++	const char* tail = sql.c_str();
++
++	// Like mysql_store_result(): run everything, keep the rows of the statement that returned some
++	while (tail != nullptr && *tail != '\0') {
++		sqlite3_stmt* stmt = nullptr;
++
++		if (sqlite3_prepare_v2(db, tail, -1, &stmt, &tail) != SQLITE_OK)
++			error(statement);
++
++		if (stmt == nullptr) // whitespace or a trailing ';'
++			continue;
++
++		const int columns = sqlite3_column_count(stmt);
++		int rc;
++
++		if (columns > 0) {
++			rows.clear();
++			nulls.clear();
++		}
++
++		while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
++			std::vector<std::string> row(columns);
++			std::vector<bool> rowNulls(columns);
++
++			for (int i = 0; i < columns; ++i) {
++				const unsigned char* text = sqlite3_column_text(stmt, i);
++
++				if (text == nullptr) {
++					rowNulls[i] = true;
++				} else {
++					row[i].assign(reinterpret_cast<const char*>(text), sqlite3_column_bytes(stmt, i));
++				}
++			}
++
++			rows.emplace_back(std::move(row));
++			nulls.emplace_back(std::move(rowNulls));
++		}
++
++		sqlite3_finalize(stmt);
++
++		if (rc != SQLITE_DONE)
++			error(statement);
++
++		affected = sqlite3_changes(db);
++	}
++
++	return new SqliteResultSet(std::move(rows), std::move(nulls), affected, sqlite3_last_insert_rowid(db));
++}
++
++engine::db::ResultSet* SqliteDatabase::executeQuery(const String& statement) {
++	return executeQuery(statement.toCharArray());
++}
++
++engine::db::ResultSet* SqliteDatabase::executeQuery(const StringBuffer& statement) {
++	return executeQuery(statement.toString().toCharArray());
++}
++
++void SqliteDatabase::commit() {
++	Locker locker(this);
++
++	if (db != nullptr && !sqlite3_get_autocommit(db))
++		sqlite3_exec(db, "COMMIT", nullptr, nullptr, nullptr);
++}
++
++void SqliteDatabase::rollback() {
++	Locker locker(this);
++
++	if (db != nullptr && !sqlite3_get_autocommit(db))
++		sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
++}
++
++void SqliteDatabase::autocommit(bool doCommit) {
++	Locker locker(this);
++
++	if (db == nullptr)
++		return;
++
++	if (doCommit && !sqlite3_get_autocommit(db))
++		sqlite3_exec(db, "COMMIT", nullptr, nullptr, nullptr);
++	else if (!doCommit && sqlite3_get_autocommit(db))
++		sqlite3_exec(db, "BEGIN", nullptr, nullptr, nullptr);
++}
++
++void SqliteDatabase::close() {
++	Locker locker(this);
++
++	if (db == nullptr)
++		return;
++
++	sqlite3_close_v2(db);
++	db = nullptr;
++
++	info("closed");
++}
++
++void SqliteDatabase::error(const char* query) {
++	StringBuffer msg;
++	msg << "DatabaseException caused by query: " << query << "\n" << sqlite3_extended_errcode(db) << ": " << sqlite3_errmsg(db);
++	Logger::error(msg);
++
++	throw DatabaseException(msg.toString());
++}
++
++#endif // WITH_SQLITE
+diff --git a/MMOCoreORB/src/server/db/SqliteDatabase.h b/MMOCoreORB/src/server/db/SqliteDatabase.h
+new file mode 100644
+index 0000000000..24004ba114
+--- /dev/null
++++ b/MMOCoreORB/src/server/db/SqliteDatabase.h
+@@ -0,0 +1,145 @@
++/*
++				Copyright <SWGEmu>
++		See file COPYING for copying conditions.*/
++
++#ifndef SQLITEDATABASE_H_
++#define SQLITEDATABASE_H_
++
++#ifdef WITH_SQLITE
++
++#include <string>
++#include <vector>
++
++#include "system/lang.h"
++
++#include "engine/log/Logger.h"
++
++#include "engine/db/Database.h"
++
++struct sqlite3;
++
++namespace server {
++  namespace db {
++    namespace sqlite {
++
++	// Rows are copied out as text when the query runs, like mysql_store_result(), so callers
++	// see the same values the MySQL backend gives them: getString() is nullptr for NULL.
++	class SqliteResultSet : public engine::db::ResultSet {
++		std::vector<std::vector<std::string>> rows;
++		std::vector<std::vector<bool>> nulls;
++		int current;
++		sys::uint64 rowsAffected;
++		sys::uint64 lastInsertId;
++
++	public:
++		SqliteResultSet(std::vector<std::vector<std::string>>&& r, std::vector<std::vector<bool>>&& n,
++				sys::uint64 affected, sys::uint64 insertId)
++			: rows(std::move(r)), nulls(std::move(n)), current(-1), rowsAffected(affected), lastInsertId(insertId) {
++		}
++
++		bool next() {
++			return ++current < static_cast<int>(rows.size());
++		}
++
++		bool getBoolean(int index) {
++			return getInt(index) != 0;
++		}
++
++		int getInt(int index) {
++			const char* value = getString(index);
++			return value ? atoi(value) : 0;
++		}
++
++		sys::uint32 getUnsignedInt(int index) {
++			const char* value = getString(index);
++			return value ? (sys::uint32) strtoul(value, nullptr, 0) : 0;
++		}
++
++		sys::int64 getLong(int index) {
++			const char* value = getString(index);
++			return value ? strtoll(value, nullptr, 10) : 0;
++		}
++
++		sys::uint64 getUnsignedLong(int index) {
++			const char* value = getString(index);
++			return value ? strtoull(value, nullptr, 10) : 0;
++		}
++
++		float getFloat(int index) {
++			const char* value = getString(index);
++			return value ? (float) atof(value) : 0.f;
++		}
++
++		char* getString(int index) {
++			if (current < 0 || current >= static_cast<int>(rows.size()) || index < 0
++					|| index >= static_cast<int>(rows[current].size()) || nulls[current][index])
++				return nullptr;
++
++			return &rows[current][index][0];
++		}
++
++		sys::uint64 getRowsAffected() {
++			return rowsAffected;
++		}
++
++		sys::uint64 getLastAffectedRow() {
++			return lastInsertId;
++		}
++
++		sys::uint64 size() {
++			return rows.size();
++		}
++	};
++
++	// A single-file database for one-PC servers (Core3.DBType = "sqlite"). It accepts the
++	// MySQL-flavoured statements Core3 writes; see SqliteDialect.h.
++	class SqliteDatabase : public Database, public Mutex, public Logger {
++		sqlite3* db;
++		String path;
++
++		static const char* sqliteThreadName;
++		static int createDatabaseThread();
++
++		void createSchema();
++		[[noreturn]] void error(const char* query);
++
++	public:
++		SqliteDatabase(const String& name, const String& path);
++		~SqliteDatabase();
++
++		// dbname, user, password and port are ignored: the database is the file at `path`
++		void connect(const String& dbname, const String& user, const String& passw, int port);
++
++		void executeStatement(const char* statement);
++		void executeStatement(const String& statement);
++		void executeStatement(const StringBuffer& statement);
++
++		void doExecuteStatement(const String& statement);
++
++		engine::db::ResultSet* executeQuery(const char* statement);
++		engine::db::ResultSet* executeQuery(const String& statement);
++		engine::db::ResultSet* executeQuery(const StringBuffer& statement);
++
++		void commit();
++		void rollback();
++		void autocommit(bool doCommit);
++
++		void close();
++
++		int compareTo(const Database* database) const final {
++			if (this < database)
++				return 1;
++			else if (this > database)
++				return -1;
++			else
++				return 0;
++		}
++	};
++
++    } // namespace sqlite
++  } // namespace db
++} // namespace server
++
++#endif // WITH_SQLITE
++
++#endif /*SQLITEDATABASE_H_*/
+diff --git a/MMOCoreORB/src/server/db/SqliteDialect.cpp b/MMOCoreORB/src/server/db/SqliteDialect.cpp
+new file mode 100644
+index 0000000000..378c42cda8
+--- /dev/null
++++ b/MMOCoreORB/src/server/db/SqliteDialect.cpp
+@@ -0,0 +1,293 @@
++/*
++				Copyright <SWGEmu>
++		See file COPYING for copying conditions.*/
++
++#ifdef WITH_SQLITE
++
++#include "SqliteDialect.h"
++
++#include <cctype>
++#include <cstdio>
++#include <ctime>
++
++#include <sqlite3.h>
++
++namespace server {
++  namespace db {
++    namespace sqlite {
++
++namespace {
++
++// Howard Hinnant's days_from_civil / civil_from_days: proleptic Gregorian, no timegm() needed
++int64_t daysFromCivil(int64_t y, unsigned m, unsigned d) {
++	y -= m <= 2;
++	const int64_t era = (y >= 0 ? y : y - 399) / 400;
++	const unsigned yoe = static_cast<unsigned>(y - era * 400);
++	const unsigned doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
++	const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
++	return era * 146097 + static_cast<int64_t>(doe) - 719468;
++}
++
++void civilFromDays(int64_t z, int64_t& y, unsigned& m, unsigned& d) {
++	z += 719468;
++	const int64_t era = (z >= 0 ? z : z - 146096) / 146097;
++	const unsigned doe = static_cast<unsigned>(z - era * 146097);
++	const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
++	const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
++	const unsigned mp = (5 * doy + 2) / 153;
++	d = doy - (153 * mp + 2) / 5 + 1;
++	m = mp + (mp < 10 ? 3 : -9);
++	y = static_cast<int64_t>(yoe) + era * 400 + (m <= 2);
++}
++
++bool startsWithWord(const std::string& s, size_t pos, const char* word) {
++	size_t i = 0;
++
++	for (; word[i] != '\0'; ++i) {
++		if (pos + i >= s.size() || std::toupper(static_cast<unsigned char>(s[pos + i])) != word[i])
++			return false;
++	}
++
++	return pos + i >= s.size() || !(std::isalnum(static_cast<unsigned char>(s[pos + i])) || s[pos + i] == '_');
++}
++
++size_t skipSpace(const std::string& s, size_t pos) {
++	while (pos < s.size() && std::isspace(static_cast<unsigned char>(s[pos])))
++		++pos;
++
++	return pos;
++}
++
++// Statement-level rewrites, applied where a statement starts
++size_t rewriteStatementStart(const std::string& in, size_t pos, std::string& out) {
++	size_t start = skipSpace(in, pos);
++
++	if (startsWithWord(in, start, "TRUNCATE")) {
++		size_t next = skipSpace(in, start + 8);
++
++		if (startsWithWord(in, next, "TABLE"))
++			next = skipSpace(in, next + 5);
++
++		out.append(in, pos, start - pos);
++		out += "DELETE FROM ";
++		return next;
++	}
++
++	return pos;
++}
++
++int64_t currentEpoch() {
++	return static_cast<int64_t>(std::time(nullptr));
++}
++
++void sqlNow(sqlite3_context* ctx, int, sqlite3_value**) {
++	std::string now = formatDateTime(currentEpoch());
++	sqlite3_result_text(ctx, now.c_str(), static_cast<int>(now.size()), SQLITE_TRANSIENT);
++}
++
++void sqlUnixTimestamp(sqlite3_context* ctx, int argc, sqlite3_value** argv) {
++	if (argc == 0) {
++		sqlite3_result_int64(ctx, currentEpoch());
++		return;
++	}
++
++	switch (sqlite3_value_type(argv[0])) {
++	case SQLITE_NULL:
++		sqlite3_result_null(ctx);
++		return;
++	case SQLITE_INTEGER:
++	case SQLITE_FLOAT:
++		sqlite3_result_value(ctx, argv[0]);
++		return;
++	default:
++		break;
++	}
++
++	int64_t epoch = 0;
++
++	// MySQL answers 0 for an invalid date rather than NULL
++	if (!parseDateTime(reinterpret_cast<const char*>(sqlite3_value_text(argv[0])), epoch))
++		epoch = 0;
++
++	sqlite3_result_int64(ctx, epoch);
++}
++
++void sqlAddTime(sqlite3_context* ctx, int, sqlite3_value** argv) {
++	if (sqlite3_value_type(argv[0]) == SQLITE_NULL || sqlite3_value_type(argv[1]) == SQLITE_NULL) {
++		sqlite3_result_null(ctx);
++		return;
++	}
++
++	int64_t epoch = 0, offset = 0;
++
++	if (!parseDateTime(reinterpret_cast<const char*>(sqlite3_value_text(argv[0])), epoch)
++			|| !parseTimeOffset(reinterpret_cast<const char*>(sqlite3_value_text(argv[1])), offset)) {
++		sqlite3_result_null(ctx);
++		return;
++	}
++
++	std::string sum = formatDateTime(epoch + offset);
++	sqlite3_result_text(ctx, sum.c_str(), static_cast<int>(sum.size()), SQLITE_TRANSIENT);
++}
++
++} // namespace
++
++std::string translateMySql(const std::string& sql) {
++	std::string out;
++	out.reserve(sql.size() + 16);
++
++	size_t i = rewriteStatementStart(sql, 0, out);
++
++	while (i < sql.size()) {
++		const char c = sql[i];
++
++		if (c == '\'' || c == '"') {
++			// MySQL string literal (double quotes are strings too without ANSI_QUOTES)
++			std::string value;
++			size_t j = i + 1;
++
++			for (; j < sql.size(); ++j) {
++				const char ch = sql[j];
++
++				if (ch == '\\' && j + 1 < sql.size()) {
++					const char esc = sql[++j];
++
++					switch (esc) {
++					case 'n': value += '\n'; break;
++					case 'r': value += '\r'; break;
++					case 't': value += '\t'; break;
++					case 'Z': value += '\x1a'; break;
++					case '0': break; // SQLite text cannot hold NUL
++					default: value += esc; break; // \\ \' \" and unknown escapes
++					}
++				} else if (ch == c) {
++					if (j + 1 < sql.size() && sql[j + 1] == c) {
++						value += c;
++						++j;
++					} else {
++						break;
++					}
++				} else {
++					value += ch;
++				}
++			}
++
++			out += '\'';
++
++			for (char ch : value) {
++				if (ch == '\'')
++					out += '\'';
++
++				out += ch;
++			}
++
++			out += '\'';
++			i = j + 1;
++		} else if (c == '`') {
++			size_t end = sql.find('`', i + 1);
++
++			if (end == std::string::npos)
++				end = sql.size() - 1;
++
++			out.append(sql, i, end - i + 1);
++			i = end + 1;
++		} else if (c == ';') {
++			out += c;
++			i = rewriteStatementStart(sql, i + 1, out);
++		} else {
++			out += c;
++			++i;
++		}
++	}
++
++	return out;
++}
++
++bool parseDateTime(const char* text, int64_t& epoch) {
++	if (text == nullptr)
++		return false;
++
++	int year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0;
++	int fields = std::sscanf(text, "%d-%d-%d%*[ T]%d:%d:%d", &year, &month, &day, &hour, &minute, &second);
++
++	if (fields != 3 && fields != 6)
++		return false;
++
++	if (month < 1 || month > 12 || day < 1 || day > 31 || hour < 0 || hour > 23
++			|| minute < 0 || minute > 59 || second < 0 || second > 60)
++		return false;
++
++	epoch = daysFromCivil(year, static_cast<unsigned>(month), static_cast<unsigned>(day)) * 86400
++		+ hour * 3600 + minute * 60 + second;
++
++	return true;
++}
++
++std::string formatDateTime(int64_t epoch) {
++	int64_t days = epoch / 86400;
++	int64_t secs = epoch % 86400;
++
++	if (secs < 0) {
++		secs += 86400;
++		--days;
++	}
++
++	int64_t year = 0;
++	unsigned month = 0, day = 0;
++	civilFromDays(days, year, month, day);
++
++	char buf[32];
++	std::snprintf(buf, sizeof(buf), "%04lld-%02u-%02u %02d:%02d:%02d", static_cast<long long>(year), month, day,
++			static_cast<int>(secs / 3600), static_cast<int>(secs % 3600 / 60), static_cast<int>(secs % 60));
++
++	return buf;
++}
++
++bool parseTimeOffset(const char* text, int64_t& seconds) {
++	if (text == nullptr)
++		return false;
++
++	bool negative = false;
++
++	while (std::isspace(static_cast<unsigned char>(*text)))
++		++text;
++
++	if (*text == '-') {
++		negative = true;
++		++text;
++	}
++
++	int hours = 0, minutes = 0, secs = 0;
++	int fields = std::sscanf(text, "%d:%d:%d", &hours, &minutes, &secs);
++
++	if (fields < 2 || hours < 0 || minutes < 0 || minutes > 59 || secs < 0 || secs > 59)
++		return false;
++
++	seconds = static_cast<int64_t>(hours) * 3600 + minutes * 60 + secs;
++
++	if (negative)
++		seconds = -seconds;
++
++	return true;
++}
++
++int registerMySqlFunctions(sqlite3* db) {
++	int rc = sqlite3_create_function(db, "NOW", 0, SQLITE_UTF8, nullptr, sqlNow, nullptr, nullptr);
++
++	if (rc == SQLITE_OK)
++		rc = sqlite3_create_function(db, "UNIX_TIMESTAMP", 0, SQLITE_UTF8, nullptr, sqlUnixTimestamp, nullptr, nullptr);
++
++	if (rc == SQLITE_OK)
++		rc = sqlite3_create_function(db, "UNIX_TIMESTAMP", 1, SQLITE_UTF8 | SQLITE_DETERMINISTIC, nullptr, sqlUnixTimestamp, nullptr, nullptr);
++
++	if (rc == SQLITE_OK)
++		rc = sqlite3_create_function(db, "ADDTIME", 2, SQLITE_UTF8 | SQLITE_DETERMINISTIC, nullptr, sqlAddTime, nullptr, nullptr);
++
++	return rc;
++}
++
++    } // namespace sqlite
++  } // namespace db
++} // namespace server
++
++#endif // WITH_SQLITE
+diff --git a/MMOCoreORB/src/server/db/SqliteDialect.h b/MMOCoreORB/src/server/db/SqliteDialect.h
+new file mode 100644
+index 0000000000..b904d5d08b
+--- /dev/null
++++ b/MMOCoreORB/src/server/db/SqliteDialect.h
+@@ -0,0 +1,42 @@
++/*
++				Copyright <SWGEmu>
++		See file COPYING for copying conditions.*/
++
++#ifndef SQLITEDIALECT_H_
++#define SQLITEDIALECT_H_
++
++#include <cstdint>
++#include <string>
++
++struct sqlite3;
++
++// Lets the MySQL-flavoured SQL Core3 writes run on SQLite. Kept free of engine3 types so it can
++// be tested on its own.
++namespace server {
++  namespace db {
++    namespace sqlite {
++
++	// Rewrites one or more MySQL statements for SQLite:
++	//  - 'it\'s' / "it's" string literals (backslash escapes, double quotes) -> 'it''s'
++	//  - TRUNCATE [TABLE] t -> DELETE FROM t
++	// `backtick` identifiers are left alone; SQLite accepts them.
++	std::string translateMySql(const std::string& sql);
++
++	// 'YYYY-MM-DD[ HH:MM:SS]' read as UTC -> seconds since the epoch. Returns false if unparsable.
++	bool parseDateTime(const char* text, int64_t& epoch);
++
++	// Seconds since the epoch -> 'YYYY-MM-DD HH:MM:SS' in UTC, the format of SQLite's CURRENT_TIMESTAMP.
++	std::string formatDateTime(int64_t epoch);
++
++	// '[-]HH:MM[:SS]' -> seconds. Returns false if unparsable.
++	bool parseTimeOffset(const char* text, int64_t& seconds);
++
++	// Adds the MySQL functions Core3 uses: NOW(), UNIX_TIMESTAMP([datetime]), ADDTIME(datetime, time).
++	// All times are UTC, consistent with DEFAULT CURRENT_TIMESTAMP columns.
++	int registerMySqlFunctions(sqlite3* db);
++
++    } // namespace sqlite
++  } // namespace db
++} // namespace server
++
++#endif /*SQLITEDIALECT_H_*/
+diff --git a/MMOCoreORB/src/server/db/SqliteSchema.h b/MMOCoreORB/src/server/db/SqliteSchema.h
+new file mode 100644
+index 0000000000..450f869c1d
+--- /dev/null
++++ b/MMOCoreORB/src/server/db/SqliteSchema.h
+@@ -0,0 +1,160 @@
++/*
++				Copyright <SWGEmu>
++		See file COPYING for copying conditions.*/
++
++#ifndef SQLITESCHEMA_H_
++#define SQLITESCHEMA_H_
++
++// The tables Core3 uses at runtime, as sql/swgemu.sql leaves them after every
++// ServerDatabase::updateDatabaseSchema() step up to SCHEMA_VERSION. Column order matches
++// MySQL because some queries insert by position (account_bans, character_bans, deleted_characters).
++// When a new alterDatabase() step is added for MySQL, mirror it here and bump the version.
++
++namespace server {
++  namespace db {
++    namespace sqlite {
++
++	static const int SCHEMA_VERSION = 1008;
++
++	static const char* const SCHEMA_STATEMENTS[] = {
++		"CREATE TABLE account_bans ("
++		" ban_id INTEGER PRIMARY KEY AUTOINCREMENT,"
++		" account_id INTEGER NOT NULL,"
++		" issuer_id INTEGER NOT NULL,"
++		" created TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,"
++		" expires INTEGER NOT NULL DEFAULT 0,"
++		" reason TEXT NOT NULL)",
++
++		"CREATE TABLE character_bans ("
++		" ban_id INTEGER PRIMARY KEY AUTOINCREMENT,"
++		" account_id INTEGER NOT NULL,"
++		" issuer_id INTEGER NOT NULL,"
++		" galaxy_id INTEGER NOT NULL,"
++		" name TEXT NOT NULL,"
++		" created TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,"
++		" expires INTEGER NOT NULL DEFAULT 0,"
++		" reason TEXT NOT NULL)",
++
++		"CREATE TABLE galaxy_bans ("
++		" ban_id INTEGER PRIMARY KEY AUTOINCREMENT,"
++		" account_id INTEGER NOT NULL,"
++		" issuer_id INTEGER NOT NULL,"
++		" galaxy_id INTEGER NOT NULL,"
++		" created TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,"
++		" expires INTEGER NOT NULL DEFAULT 0,"
++		" reason TEXT NOT NULL)",
++
++		"CREATE TABLE account_log ("
++		" acclog_id INTEGER PRIMARY KEY AUTOINCREMENT,"
++		" account_id INTEGER NOT NULL,"
++		" timestamp DATETIME NOT NULL,"
++		" ip_address TEXT NOT NULL)",
++
++		"CREATE TABLE accounts ("
++		" account_id INTEGER PRIMARY KEY AUTOINCREMENT,"
++		" username TEXT NOT NULL,"
++		" password TEXT NOT NULL,"
++		" station_id INTEGER NOT NULL,"
++		" created TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,"
++		" active INTEGER NOT NULL DEFAULT 1,"
++		" admin_level INTEGER NOT NULL DEFAULT 0,"
++		" salt TEXT NOT NULL)",
++
++		"CREATE INDEX accounts_username ON accounts (username)",
++
++		"CREATE TABLE characters ("
++		" character_oid INTEGER PRIMARY KEY NOT NULL,"
++		" account_id INTEGER NOT NULL DEFAULT 0,"
++		" galaxy_id INTEGER NOT NULL DEFAULT 0,"
++		" firstname TEXT NOT NULL DEFAULT '',"
++		" surname TEXT DEFAULT NULL,"
++		" race INTEGER NOT NULL DEFAULT 0,"
++		" gender INTEGER NOT NULL DEFAULT 0,"
++		" template TEXT NOT NULL,"
++		" creation_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
++
++		"CREATE INDEX characters_acc_idx ON characters (account_id)",
++
++		"CREATE TABLE characters_dirty ("
++		" character_oid INTEGER PRIMARY KEY NOT NULL,"
++		" account_id INTEGER NOT NULL DEFAULT 0,"
++		" galaxy_id INTEGER NOT NULL DEFAULT 0,"
++		" firstname TEXT NOT NULL DEFAULT '',"
++		" surname TEXT DEFAULT NULL,"
++		" race INTEGER NOT NULL DEFAULT 0,"
++		" gender INTEGER NOT NULL DEFAULT 0,"
++		" template TEXT NOT NULL,"
++		" creation_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
++
++		"CREATE TABLE deleted_characters ("
++		" character_oid INTEGER PRIMARY KEY NOT NULL,"
++		" account_id INTEGER NOT NULL DEFAULT 0,"
++		" galaxy_id INTEGER NOT NULL DEFAULT 0,"
++		" firstname TEXT NOT NULL DEFAULT '',"
++		" surname TEXT DEFAULT NULL,"
++		" race INTEGER NOT NULL DEFAULT 0,"
++		" gender INTEGER NOT NULL DEFAULT 0,"
++		" template TEXT NOT NULL,"
++		" creation_date TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,"
++		" db_deleted INTEGER NOT NULL DEFAULT 0)",
++
++		"CREATE INDEX deleted_characters_acc_idx ON deleted_characters (account_id)",
++
++		"CREATE TABLE galaxy ("
++		" galaxy_id INTEGER PRIMARY KEY AUTOINCREMENT,"
++		" name TEXT NOT NULL DEFAULT '',"
++		" address TEXT NOT NULL DEFAULT '',"
++		" port INTEGER NOT NULL DEFAULT 0,"
++		" pingport INTEGER DEFAULT NULL,"
++		" population INTEGER NOT NULL DEFAULT 0)",
++
++		"CREATE TABLE galaxy_access ("
++		" account_id INTEGER NOT NULL DEFAULT 0,"
++		" galaxy_id INTEGER NOT NULL,"
++		" expires DATETIME DEFAULT NULL,"
++		" PRIMARY KEY (account_id, galaxy_id))",
++
++		"CREATE TABLE sessions ("
++		" account_id INTEGER PRIMARY KEY NOT NULL DEFAULT 0,"
++		" session_id TEXT NOT NULL,"
++		" ip TEXT NOT NULL,"
++		" expires DATETIME NOT NULL)",
++
++		"CREATE TABLE account_ips ("
++		" idaccount_ips INTEGER PRIMARY KEY AUTOINCREMENT,"
++		" account_id INTEGER NOT NULL,"
++		" galaxy_id INTEGER DEFAULT -1,"
++		" ip TEXT NOT NULL,"
++		" timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,"
++		" logout INTEGER NOT NULL DEFAULT 0,"
++		" online_count INTEGER DEFAULT -1)",
++
++		"CREATE TABLE session_stats ("
++		" timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,"
++		" uptime INTEGER DEFAULT -1,"
++		" ip TEXT NOT NULL,"
++		" galaxy_id INTEGER DEFAULT -1,"
++		" account_id INTEGER NOT NULL,"
++		" character_oid INTEGER NOT NULL,"
++		" session_seconds INTEGER NOT NULL,"
++		" delta_seconds INTEGER NOT NULL,"
++		" delta_credits INTEGER NOT NULL,"
++		" delta_skillpoints INTEGER NOT NULL,"
++		" activity_xp INTEGER NOT NULL,"
++		" activity_movement INTEGER NOT NULL,"
++		" current_credits INTEGER NOT NULL,"
++		" ip_account_count INTEGER NOT NULL,"
++		" session_end INTEGER NOT NULL)",
++
++		"CREATE INDEX session_stats_timestamp ON session_stats (timestamp)",
++		"CREATE INDEX session_stats_ip ON session_stats (ip)",
++		"CREATE INDEX session_stats_galaxy_ip ON session_stats (galaxy_id, ip, account_id, character_oid)",
++
++		"CREATE TABLE db_metadata (schema_version INTEGER NOT NULL)",
++	};
++
++    } // namespace sqlite
++  } // namespace db
++} // namespace server
++
++#endif /*SQLITESCHEMA_H_*/
+diff --git a/MMOCoreORB/src/server/zone/managers/player/creation/PlayerCreationManager.cpp b/MMOCoreORB/src/server/zone/managers/player/creation/PlayerCreationManager.cpp
+index 0f99718352..2b9bef22bc 100644
+--- a/MMOCoreORB/src/server/zone/managers/player/creation/PlayerCreationManager.cpp
++++ b/MMOCoreORB/src/server/zone/managers/player/creation/PlayerCreationManager.cpp
+@@ -455,7 +455,8 @@ bool PlayerCreationManager::createCharacter(ClientCreateCharacterCallback* callb
+ 						StringBuffer query;
+ 						uint32 galaxyId = zoneServer.get()->getGalaxyID();
+ 						uint32 accountId = client->getAccountID();
+-						query << "(SELECT UNIX_TIMESTAMP(c.creation_date) as t FROM characters as c WHERE c.account_id = " << accountId << " AND c.galaxy_id = " << galaxyId << " ORDER BY c.creation_date DESC) UNION (SELECT UNIX_TIMESTAMP(d.creation_date) FROM deleted_characters as d WHERE d.account_id = " << accountId << " AND d.galaxy_id = " << galaxyId << " ORDER BY d.creation_date DESC) ORDER BY t DESC LIMIT 1";
++						// No parenthesized UNION members: SQLite (Core3.DBType = "sqlite") does not accept them
++						query << "SELECT UNIX_TIMESTAMP(c.creation_date) as t FROM characters as c WHERE c.account_id = " << accountId << " AND c.galaxy_id = " << galaxyId << " UNION SELECT UNIX_TIMESTAMP(d.creation_date) FROM deleted_characters as d WHERE d.account_id = " << accountId << " AND d.galaxy_id = " << galaxyId << " ORDER BY t DESC LIMIT 1";
+ 
+ 						UniqueReference<ResultSet*> res(ServerDatabase::instance()->executeQuery(query));
+ 
+diff --git a/MMOCoreORB/src/tests/TestCore.h b/MMOCoreORB/src/tests/TestCore.h
+index 04fff23224..bdbbd79cb1 100644
+--- a/MMOCoreORB/src/tests/TestCore.h
++++ b/MMOCoreORB/src/tests/TestCore.h
+@@ -23,7 +23,9 @@ public:
+ 	}
+ 
+ 	void initialize() override {
++#ifdef WITH_MYSQL
+ 		 server::db::mysql::MySqlDatabase::initializeLibrary();
++#endif // WITH_MYSQL
+ 	}
+ 
+ 	void run() override {
+@@ -31,7 +33,9 @@ public:
+ 	}
+ 
+ 	void finalizeContext() override {
++#ifdef WITH_MYSQL
+ 		server::db::mysql::MySqlDatabase::finalizeLibrary();
++#endif // WITH_MYSQL
+ 	}
+ };
+ 

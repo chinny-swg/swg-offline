@@ -1,0 +1,83 @@
+Unit tests for the SQLite backend (run with core3 runUnitTests when COMPILE_TESTS is on).
+
+diff --git a/MMOCoreORB/src/tests/SqliteDatabaseTest.cpp b/MMOCoreORB/src/tests/SqliteDatabaseTest.cpp
+new file mode 100644
+index 0000000000..f105860963
+--- /dev/null
++++ b/MMOCoreORB/src/tests/SqliteDatabaseTest.cpp
+@@ -0,0 +1,75 @@
++/*
++ * SqliteDatabaseTest.cpp
++ */
++
++#ifdef WITH_SQLITE
++
++#include "gtest/gtest.h"
++
++#include "server/db/SqliteDatabase.h"
++#include "server/db/SqliteDialect.h"
++#include "server/db/SqliteSchema.h"
++
++using namespace server::db::sqlite;
++
++TEST(SqliteDialectTest, StringLiterals) {
++	EXPECT_EQ("SELECT 'it''s', 'a\"b', 'x''y', `t`", translateMySql("SELECT 'it\\'s', \"a\\\"b\", 'x''y', `t`"));
++	EXPECT_EQ("SELECT 'a\\b'", translateMySql("SELECT 'a\\\\b'"));
++}
++
++TEST(SqliteDialectTest, Truncate) {
++	EXPECT_EQ("DELETE FROM characters", translateMySql("TRUNCATE TABLE characters"));
++	EXPECT_EQ("  DELETE FROM sessions;DELETE FROM x", translateMySql("  truncate sessions;TRUNCATE TABLE x"));
++	EXPECT_EQ("SELECT 'TRUNCATE TABLE x'", translateMySql("SELECT 'TRUNCATE TABLE x'"));
++}
++
++TEST(SqliteDialectTest, DateTimes) {
++	int64_t epoch = 0;
++
++	EXPECT_TRUE(parseDateTime("1970-01-02 00:00:01", epoch));
++	EXPECT_EQ(86401, epoch);
++	EXPECT_EQ("2023-11-14 22:13:20", formatDateTime(1700000000));
++	EXPECT_TRUE(parseDateTime("2024-02-29", epoch));
++	EXPECT_EQ("2024-02-29 00:00:00", formatDateTime(epoch));
++	EXPECT_FALSE(parseDateTime("garbage", epoch));
++
++	int64_t offset = 0;
++
++	EXPECT_TRUE(parseTimeOffset("00:15", offset));
++	EXPECT_EQ(900, offset);
++	EXPECT_TRUE(parseTimeOffset("-01:00:30", offset));
++	EXPECT_EQ(-3630, offset);
++}
++
++TEST(SqliteDatabaseTest, CreatesSchemaAndRunsCore3Queries) {
++	SqliteDatabase db("SqliteDatabaseTest", ":memory:");
++	db.connect("", "", "", 0);
++
++	UniqueReference<ResultSet*> version(db.executeQuery("SELECT `schema_version` FROM `db_metadata`;"));
++	ASSERT_TRUE(version->next());
++	EXPECT_EQ(SCHEMA_VERSION, version->getInt(0));
++
++	UniqueReference<ResultSet*> account(db.executeQuery("INSERT INTO accounts (username, password, station_id, salt) VALUES ('O\\'Brien','h',1,'s');"));
++	EXPECT_EQ(1u, account->getLastAffectedRow());
++	EXPECT_EQ(1u, account->getRowsAffected());
++
++	UniqueReference<ResultSet*> session(db.executeQuery("REPLACE INTO sessions (account_id, session_id, ip, expires) VALUES (1, 'abc', '127.0.0.1' , ADDTIME(NOW(), '00:15'));"));
++
++	UniqueReference<ResultSet*> login(db.executeQuery("SELECT a.username, UNIX_TIMESTAMP(a.created), IFNULL(s.session_id, '') FROM accounts a, sessions s "
++			"WHERE s.account_id = a.account_id AND s.session_id = 'abc' AND s.expires > NOW() LIMIT 1;"));
++	ASSERT_EQ(1u, login->size());
++	ASSERT_TRUE(login->next());
++	EXPECT_STREQ("O'Brien", login->getString(0));
++	EXPECT_NEAR((double) time(nullptr), (double) login->getLong(1), 5.0);
++	EXPECT_FALSE(login->next());
++
++	UniqueReference<ResultSet*> nulls(db.executeQuery("SELECT NULL, 'x'"));
++	ASSERT_TRUE(nulls->next());
++	EXPECT_EQ(nullptr, nulls->getString(0));
++	EXPECT_EQ(0, nulls->getInt(0));
++	EXPECT_STREQ("x", nulls->getString(1));
++
++	EXPECT_THROW(db.executeQuery("SELECT * FROM no_such_table"), DatabaseException);
++}
++
++#endif // WITH_SQLITE
