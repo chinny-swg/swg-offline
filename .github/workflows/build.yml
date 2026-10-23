@@ -45,12 +45,13 @@ jobs:
         with:
           repository: ${{ steps.pin.outputs.repo }}
           ref: ${{ steps.pin.outputs.commit }}
-          path: Core3
+          # Not "Core3": Windows paths ignore case, and this repo already has core3/
+          path: core3-src
           submodules: true
 
       - name: Apply patches
         shell: bash
-        run: core3/apply-patches.sh Core3
+        run: core3/apply-patches.sh core3-src
 
       - uses: ilammy/msvc-dev-cmd@v1
         with:
@@ -116,7 +117,7 @@ jobs:
           $db = Get-ChildItem "$vcpkg/lib" -Filter "libdb*.lib" | Select-Object -First 1
           if (-not $db) { throw "Berkeley DB library not found" }
           # CLANGXX_EXECUTABLE_PATH=OFF stops Core3 from picking Visual Studio's bundled clang; build with cl
-          cmake -S Core3/MMOCoreORB -B Core3/MMOCoreORB/build/win -G Ninja `
+          cmake -S core3-src/MMOCoreORB -B core3-src/MMOCoreORB/build/win -G Ninja `
             -DCLANGXX_EXECUTABLE_PATH=OFF -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl `
             -DCMAKE_BUILD_TYPE=RelWithDebInfo `
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
@@ -135,7 +136,7 @@ jobs:
         shell: pwsh
         run: |
           # -k 0: keep going so one run reports every compile error
-          cmd /c "ninja -C Core3/MMOCoreORB/build/win -k 0 core3 > build.log 2>&1"
+          cmd /c "ninja -C core3-src/MMOCoreORB/build/win -k 0 core3 > build.log 2>&1"
           $status = $LASTEXITCODE
           $errors = Select-String -Path build.log -Pattern "error C\d+|error LNK\d+|fatal error|FAILED:" | Select-Object -First 300
           if ($errors) {
@@ -160,11 +161,11 @@ jobs:
         run: |
           $out = "dist/core3-windows"
           New-Item -ItemType Directory -Force $out | Out-Null
-          Copy-Item -Recurse Core3/MMOCoreORB/bin/* $out
-          Copy-Item Core3/MMOCoreORB/build/win/src/core3.exe $out
+          Copy-Item -Recurse core3-src/MMOCoreORB/bin/* $out
+          Copy-Item core3-src/MMOCoreORB/build/win/src/core3.exe $out
           Copy-Item vcpkg_installed/x64-windows/bin/*.dll $out
-          Get-ChildItem Core3/MMOCoreORB/build/win/src -Filter *.dll | Copy-Item -Destination $out
-          Copy-Item Core3/MMOCoreORB/build/win/src/core3.pdb $out -ErrorAction SilentlyContinue
+          Get-ChildItem core3-src/MMOCoreORB/build/win/src -Filter *.dll | Copy-Item -Destination $out
+          Copy-Item core3-src/MMOCoreORB/build/win/src/core3.pdb $out -ErrorAction SilentlyContinue
           Get-ChildItem $out -Filter *.dll | Select-Object -ExpandProperty Name
 
       - name: Smoke test (database only, no TREs)

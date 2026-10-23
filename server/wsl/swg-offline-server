@@ -134,8 +134,12 @@ FIFO="$(mktemp -u /tmp/swg-offline-console.XXXXXX)"
 mkfifo -m 600 "${FIFO}" || die "mkfifo failed" 16
 chown "${RUN_USER}:" "${FIFO}"
 
-env HOME="$(getent passwd "${RUN_USER}" | cut -d: -f6)" USER="${RUN_USER}" \
-    setpriv --reuid="${RUN_USER}" --regid="${RUN_USER}" --init-groups -- "${CORE3_EXE}" < "${FIFO}" &
+if [ "$(id -un)" = "${RUN_USER}" ]; then
+    "${CORE3_EXE}" < "${FIFO}" &
+else
+    env HOME="$(getent passwd "${RUN_USER}" | cut -d: -f6)" USER="${RUN_USER}" \
+        setpriv --reuid="${RUN_USER}" --regid="${RUN_USER}" --init-groups -- "${CORE3_EXE}" < "${FIFO}" &
+fi
 CORE3_PID=$!
 
 exec 3> "${FIFO}"
