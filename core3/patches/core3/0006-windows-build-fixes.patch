@@ -2,7 +2,21 @@ Windows build fixes in Core3 sources:
 - uint (a glibc typedef) -> uint32 in TransactionLog, ComponentAnalysisTool and FrsManager.
 - PlanetTravelPointList: drop a stale PLATFORM_WIN branch that allocated a char* with _malloca
   but then used it as a Vector; Vector<bool> works on every platform.
+- ZoneClientSession: create log/packets with engine3's File::mkpath; Windows mkdir() takes no mode.
 
+diff --git a/MMOCoreORB/src/server/zone/ZoneClientSessionImplementation.cpp b/MMOCoreORB/src/server/zone/ZoneClientSessionImplementation.cpp
+index 98d198d376..597856eb9e 100644
+--- a/MMOCoreORB/src/server/zone/ZoneClientSessionImplementation.cpp
++++ b/MMOCoreORB/src/server/zone/ZoneClientSessionImplementation.cpp
+@@ -135,7 +135,7 @@ void ZoneClientSessionImplementation::startPacketLogging(const String& playerNam
+ 		return;
+ 	}
+ 
+-	mkdir("log/packets", 0755);
++	File::mkpath("log/packets"); // portable: POSIX mkdir() takes a mode, Windows mkdir() does not
+ 
+ 	Time now;
+ 
 diff --git a/MMOCoreORB/src/server/zone/managers/frs/FrsManagerImplementation.cpp b/MMOCoreORB/src/server/zone/managers/frs/FrsManagerImplementation.cpp
 index 39872d3b2c..07e55ac4da 100644
 --- a/MMOCoreORB/src/server/zone/managers/frs/FrsManagerImplementation.cpp
@@ -17,7 +31,7 @@ index 39872d3b2c..07e55ac4da 100644
  	const GalaxyBanEntry* galaxyBan = account->getGalaxyBan(galaxyID);
  
 diff --git a/MMOCoreORB/src/server/zone/managers/planet/PlanetTravelPointList.h b/MMOCoreORB/src/server/zone/managers/planet/PlanetTravelPointList.h
-index 4c533fc1a5..208884fb69 100644
+index 4c533fc1a5..151757f615 100644
 --- a/MMOCoreORB/src/server/zone/managers/planet/PlanetTravelPointList.h
 +++ b/MMOCoreORB/src/server/zone/managers/planet/PlanetTravelPointList.h
 @@ -40,11 +40,7 @@ public:
@@ -32,6 +46,16 @@ index 4c533fc1a5..208884fb69 100644
  		int insertionPoints = totalPoints;
  
  		for (int i = 0; i < totalPoints; ++i) {
+@@ -108,9 +104,6 @@ public:
+ 				message->insertByte((byte) VectorMap<String, Reference<PlanetTravelPoint*> >::get(i)->isInterplanetary());
+ 		}
+ 
+-#ifdef PLATFORM_WIN
+-		_freea(incomingAllowed);
+-#endif
+ 
+ 		runlock();
+ 	}
 diff --git a/MMOCoreORB/src/server/zone/objects/tangible/tool/componentanalysis/ComponentAnalysisToolImplementation.cpp b/MMOCoreORB/src/server/zone/objects/tangible/tool/componentanalysis/ComponentAnalysisToolImplementation.cpp
 index 795c5be37f..d253c8f7c7 100644
 --- a/MMOCoreORB/src/server/zone/objects/tangible/tool/componentanalysis/ComponentAnalysisToolImplementation.cpp
