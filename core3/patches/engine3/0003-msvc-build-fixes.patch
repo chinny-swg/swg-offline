@@ -1,0 +1,127 @@
+MSVC build fixes in engine3:
+- platform.h: PLATFORM_64 also for MSVC's _M_X64/_M_ARM64 (it only checked GCC's macros), and
+  __PRETTY_FUNCTION__ as __FUNCSIG__.
+- File.cpp: libgen.h is POSIX-only; small basename()/dirname() equivalents on Windows that accept
+  both / and \.
+- String.cpp: include <sstream> for std::ostringstream (MSVC does not pull it in indirectly).
+- ProtectedHeap.cpp: go through intptr_t when casting a pointer to off_t (32-bit long on Windows).
+
+diff --git a/MMOEngine/src/system/io/File.cpp b/MMOEngine/src/system/io/File.cpp
+index 7f2fc05..468e454 100755
+--- a/MMOEngine/src/system/io/File.cpp
++++ b/MMOEngine/src/system/io/File.cpp
+@@ -12,7 +12,65 @@
+ 
+ #include <cerrno>
+ 
++#ifndef PLATFORM_WIN
+ #include <libgen.h>
++#else
++#include <cstring>
++
++namespace {
++	// POSIX basename()/dirname() for Windows: '/' and '\\' both separate, modifies path like libgen
++	bool isSeparator(char c) {
++		return c == '/' || c == '\\';
++	}
++
++	char* basename(char* path) {
++		static char dot[] = ".";
++
++		if (path == nullptr || *path == '\0')
++			return dot;
++
++		char* end = path + strlen(path) - 1;
++
++		while (end > path && isSeparator(*end))
++			*end-- = '\0';
++
++		char* start = end;
++
++		while (start > path && !isSeparator(*(start - 1)))
++			start--;
++
++		return start;
++	}
++
++	char* dirname(char* path) {
++		static char dot[] = ".";
++
++		if (path == nullptr || *path == '\0')
++			return dot;
++
++		char* end = path + strlen(path) - 1;
++
++		while (end > path && isSeparator(*end))
++			end--;
++
++		while (end > path && !isSeparator(*end))
++			end--;
++
++		if (!isSeparator(*end))
++			return dot;
++
++		while (end > path && isSeparator(*(end - 1)))
++			end--;
++
++		if (end == path)
++			end++; // keep the root separator
++
++		*end = '\0';
++
++		return path;
++	}
++}
++#endif
+ 
+ #include "File.h"
+ 
+diff --git a/MMOEngine/src/system/lang/String.cpp b/MMOEngine/src/system/lang/String.cpp
+index ba03559..e658652 100755
+--- a/MMOEngine/src/system/lang/String.cpp
++++ b/MMOEngine/src/system/lang/String.cpp
+@@ -9,6 +9,7 @@
+ #include "Long.h"
+ 
+ #include <regex>
++#include <sstream>
+ 
+ constexpr uint32 StringHashCodeTable::crctable[];
+ 
+diff --git a/MMOEngine/src/system/mm/ProtectedHeap.cpp b/MMOEngine/src/system/mm/ProtectedHeap.cpp
+index 90a3c88..7ea166e 100644
+--- a/MMOEngine/src/system/mm/ProtectedHeap.cpp
++++ b/MMOEngine/src/system/mm/ProtectedHeap.cpp
+@@ -6,7 +6,7 @@
+ #include "ProtectedHeap.h"
+ 
+ ProtectedHeap::ProtectedHeap() {
+-	offset = (off_t) mmapManager->getKernelHeapBase();
++	offset = (off_t) (intptr_t) mmapManager->getKernelHeapBase();
+ 
+ 	protectionLevel = 1;
+ 
+diff --git a/MMOEngine/src/system/platform.h b/MMOEngine/src/system/platform.h
+index 8e283d7..8be573a 100755
+--- a/MMOEngine/src/system/platform.h
++++ b/MMOEngine/src/system/platform.h
+@@ -25,7 +25,7 @@
+ 	#define PLATFORM_UNIX
+ #endif
+ 
+-#if defined(__x86_64__) || defined(__aarch64__)
++#if defined(__x86_64__) || defined(__aarch64__) || defined(_M_X64) || defined(_M_ARM64)
+ #define PLATFORM_64
+ #else
+ #define PLATFORM_32
+@@ -34,6 +34,10 @@
+ #define GCC_VERSION (__GNUC__ * 10000 + __GNUC_MINOR__ * 100 + __GNUC_PATCHLEVEL__)
+ 
+ #ifdef _MSC_VER
++#ifndef __PRETTY_FUNCTION__
++#define __PRETTY_FUNCTION__ __FUNCSIG__
++#endif
++
+ #pragma warning (disable : 4018)
+ #pragma warning (disable : 4800)
+ #pragma warning (disable : 4244)
