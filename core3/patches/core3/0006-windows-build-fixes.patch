@@ -1,0 +1,126 @@
+Windows build fixes in Core3 sources:
+- uint (a glibc typedef) -> uint32 in TransactionLog, ComponentAnalysisTool and FrsManager.
+- PlanetTravelPointList: drop a stale PLATFORM_WIN branch that allocated a char* with _malloca
+  but then used it as a Vector; Vector<bool> works on every platform.
+- ZoneClientSession: create log/packets with engine3's File::mkpath; Windows mkdir() takes no mode.
+- TravelCouponUseSuiCallback: pass the zero amount as uint32. MSVC accepts false as a null
+  pointer, making TransactionLog(player, code, false) ambiguous; GCC already picked this overload.
+
+diff --git a/MMOCoreORB/src/server/zone/ZoneClientSessionImplementation.cpp b/MMOCoreORB/src/server/zone/ZoneClientSessionImplementation.cpp
+index 98d198d376..597856eb9e 100644
+--- a/MMOCoreORB/src/server/zone/ZoneClientSessionImplementation.cpp
++++ b/MMOCoreORB/src/server/zone/ZoneClientSessionImplementation.cpp
+@@ -135,7 +135,7 @@ void ZoneClientSessionImplementation::startPacketLogging(const String& playerNam
+ 		return;
+ 	}
+ 
+-	mkdir("log/packets", 0755);
++	File::mkpath("log/packets"); // portable: POSIX mkdir() takes a mode, Windows mkdir() does not
+ 
+ 	Time now;
+ 
+diff --git a/MMOCoreORB/src/server/zone/managers/frs/FrsManagerImplementation.cpp b/MMOCoreORB/src/server/zone/managers/frs/FrsManagerImplementation.cpp
+index 39872d3b2c..07e55ac4da 100644
+--- a/MMOCoreORB/src/server/zone/managers/frs/FrsManagerImplementation.cpp
++++ b/MMOCoreORB/src/server/zone/managers/frs/FrsManagerImplementation.cpp
+@@ -408,7 +408,7 @@ bool FrsManagerImplementation::isBanned(CreatureObject* player) {
+ 	if (zoneServer == nullptr)
+ 		return false;
+ 
+-	uint galaxyID = zoneServer->getGalaxyID();
++	uint32 galaxyID = zoneServer->getGalaxyID();
+ 
+ 	const GalaxyBanEntry* galaxyBan = account->getGalaxyBan(galaxyID);
+ 
+diff --git a/MMOCoreORB/src/server/zone/managers/planet/PlanetTravelPointList.h b/MMOCoreORB/src/server/zone/managers/planet/PlanetTravelPointList.h
+index 4c533fc1a5..151757f615 100644
+--- a/MMOCoreORB/src/server/zone/managers/planet/PlanetTravelPointList.h
++++ b/MMOCoreORB/src/server/zone/managers/planet/PlanetTravelPointList.h
+@@ -40,11 +40,7 @@ public:
+ 
+ 		int totalPoints = size();
+ 
+-#ifdef PLATFORM_WIN
+-		char* incomingAllowed = (char*) _malloca(totalPoints);
+-#else
+ 		Vector<bool> incomingAllowed;
+-#endif
+ 		int insertionPoints = totalPoints;
+ 
+ 		for (int i = 0; i < totalPoints; ++i) {
+@@ -108,9 +104,6 @@ public:
+ 				message->insertByte((byte) VectorMap<String, Reference<PlanetTravelPoint*> >::get(i)->isInterplanetary());
+ 		}
+ 
+-#ifdef PLATFORM_WIN
+-		_freea(incomingAllowed);
+-#endif
+ 
+ 		runlock();
+ 	}
+diff --git a/MMOCoreORB/src/server/zone/objects/player/sui/callbacks/TravelCouponUseSuiCallback.h b/MMOCoreORB/src/server/zone/objects/player/sui/callbacks/TravelCouponUseSuiCallback.h
+index f06c0e9751..b5b90d9c45 100644
+--- a/MMOCoreORB/src/server/zone/objects/player/sui/callbacks/TravelCouponUseSuiCallback.h
++++ b/MMOCoreORB/src/server/zone/objects/player/sui/callbacks/TravelCouponUseSuiCallback.h
+@@ -107,7 +107,7 @@ public:
+ 				trx.commit();
+ 			}
+ 		} else {
+-			TransactionLog trx(player, TrxCode::TRAVELSYSTEM, false);
++			TransactionLog trx(player, TrxCode::TRAVELSYSTEM, static_cast<uint32>(0)); // amount 0; "false" is ambiguous with the SceneObject* overload on MSVC
+ 			trx.addState("departurePlanet", departurePlanet);
+ 			trx.addState("departurePoint", departurePoint);
+ 			trx.addState("arrivalPlanet", arrivalPlanet);
+diff --git a/MMOCoreORB/src/server/zone/objects/tangible/tool/componentanalysis/ComponentAnalysisToolImplementation.cpp b/MMOCoreORB/src/server/zone/objects/tangible/tool/componentanalysis/ComponentAnalysisToolImplementation.cpp
+index 795c5be37f..d253c8f7c7 100644
+--- a/MMOCoreORB/src/server/zone/objects/tangible/tool/componentanalysis/ComponentAnalysisToolImplementation.cpp
++++ b/MMOCoreORB/src/server/zone/objects/tangible/tool/componentanalysis/ComponentAnalysisToolImplementation.cpp
+@@ -724,9 +724,9 @@ void ComponentAnalysisToolImplementation::createSchematic(CreatureObject* player
+ 		return;
+ 	}
+ 
+-	uint schematicMask = fragmentObject->getFragmentBitmask();
+-	uint schematicCRC = fragmentObject->getTargetSchematic();
+-	uint schematicCount = fragmentObject->getTotalFragments();
++	uint32 schematicMask = fragmentObject->getFragmentBitmask();
++	uint32 schematicCRC = fragmentObject->getTargetSchematic();
++	uint32 schematicCount = fragmentObject->getTotalFragments();
+ 
+ 	int componentCount = getContainerObjectsSize();
+ 
+diff --git a/MMOCoreORB/src/server/zone/objects/transaction/TransactionLog.cpp b/MMOCoreORB/src/server/zone/objects/transaction/TransactionLog.cpp
+index d0095fdcd3..4c1e551d51 100644
+--- a/MMOCoreORB/src/server/zone/objects/transaction/TransactionLog.cpp
++++ b/MMOCoreORB/src/server/zone/objects/transaction/TransactionLog.cpp
+@@ -57,7 +57,7 @@ TransactionLog::TransactionLog(SceneObject* src, SceneObject* dst, TrxCode code,
+ 	initializeCreditsCommon(src, dst, code, amount, isCash);
+ }
+ 
+-TransactionLog::TransactionLog(uint64 srcObjectID, TrxCode code, uint amount, bool isCash, CAPTURE_CALLER_ARGS) {
++TransactionLog::TransactionLog(uint64 srcObjectID, TrxCode code, uint32 amount, bool isCash, CAPTURE_CALLER_ARGS) {
+ 	if (!isEnabled()) {
+ 		return;
+ 	}
+diff --git a/MMOCoreORB/src/server/zone/objects/transaction/TransactionLog.h b/MMOCoreORB/src/server/zone/objects/transaction/TransactionLog.h
+index de17fb6016..0a3ae8d153 100644
+--- a/MMOCoreORB/src/server/zone/objects/transaction/TransactionLog.h
++++ b/MMOCoreORB/src/server/zone/objects/transaction/TransactionLog.h
+@@ -178,15 +178,15 @@ public:
+ 			}
+ 	}
+ 
+-	TransactionLog(SceneObject* src, TrxCode code, uint amount, bool isCash = true, CAPTURE_CALLER_DECLARE)
++	TransactionLog(SceneObject* src, TrxCode code, uint32 amount, bool isCash = true, CAPTURE_CALLER_DECLARE)
+ 		: TransactionLog(src, nullptr, code, amount, isCash, file, function, line) {
+ 	}
+ 
+-	TransactionLog(TrxCode code, SceneObject* dst, uint amount, bool isCash = true, CAPTURE_CALLER_DECLARE)
++	TransactionLog(TrxCode code, SceneObject* dst, uint32 amount, bool isCash = true, CAPTURE_CALLER_DECLARE)
+ 		: TransactionLog((SceneObject*)nullptr, dst, code, amount, isCash, file, function, line) {
+ 	}
+ 
+-	TransactionLog(uint64 srcObjectID, TrxCode code, uint amount, bool isCash = true, CAPTURE_CALLER_DECLARE);
++	TransactionLog(uint64 srcObjectID, TrxCode code, uint32 amount, bool isCash = true, CAPTURE_CALLER_DECLARE);
+ 
+ 	TransactionLog(CreditObject* creditObject, SceneObject* dst, TrxCode code, int amount, bool isCash = true, CAPTURE_CALLER_DECLARE);
+ 

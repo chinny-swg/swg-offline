@@ -1,0 +1,43 @@
+Opt-in CORE3_BIND_ADDRESS: when set (e.g. 127.0.0.1), services listen on that address only,
+so an offline server is unreachable from outside the PC and Windows shows no firewall prompt.
+
+diff --git a/MMOEngine/src/system/net/SocketAddress.cpp b/MMOEngine/src/system/net/SocketAddress.cpp
+index 46accac..4d3ab16 100755
+--- a/MMOEngine/src/system/net/SocketAddress.cpp
++++ b/MMOEngine/src/system/net/SocketAddress.cpp
+@@ -11,14 +11,35 @@
+ 
+ #include "system/lang/Math.h"
+ 
++#include <cstdlib>
++#include <cstring>
++
++#ifdef PLATFORM_WIN
++#include <ws2tcpip.h>
++#endif
++
+ SocketAddress::SocketAddress() {
+ 	clear();
+ }
+ 
+ SocketAddress::SocketAddress(int port) {
++	memset(&addr, 0, sizeof(addr));
++
+ 	addr.sin_family = AF_INET;
+ 	addr.sin_addr.s_addr = INADDR_ANY;
+ 	addr.sin_port = htons(port);
++
++	// Opt-in: listen on one address only, e.g. 127.0.0.1 for a server nothing outside the PC may reach
++	static const char* bindAddress = getenv("CORE3_BIND_ADDRESS");
++
++	if (bindAddress != nullptr && *bindAddress != '\0') {
++		struct in_addr in;
++
++		if (inet_pton(AF_INET, bindAddress, &in) == 1)
++			addr.sin_addr = in;
++		else
++			Logger::console.error() << "ignoring invalid CORE3_BIND_ADDRESS " << bindAddress;
++	}
+ }
+ 
+ SocketAddress::SocketAddress(const String& host, int port) {

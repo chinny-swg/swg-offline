@@ -1,0 +1,273 @@
+name: Build
+
+# Launcher tests, the native Windows core3.exe (Core3 at core3/pin plus core3/patches, MSVC,
+# vcpkg libraries, SQLite instead of MySQL) and the SWG Offline installer. Core3 itself is only
+# read: it is checked out from its public repo, never changed there.
+
+on:
+  workflow_dispatch:
+  push:
+  pull_request:
+
+jobs:
+  launcher-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unit tests (includes the WSL server script)
+        working-directory: launcher
+        run: python3 -m unittest discover -s tests -t . -v
+      - name: Shell scripts
+        run: shellcheck -x -P SCRIPTDIR server/wsl/setup.sh server/wsl/swg-offline-server core3/apply-patches.sh
+
+  core3:
+    runs-on: windows-2022
+    timeout-minutes: 350
+    env:
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vcpkg-cache
+      LUA_VERSION: "5.3.6"
+
+    steps:
+      - name: Keep LF line endings (the patches must match Core3's files byte for byte)
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v4
+
+      - name: Read Core3 pin
+        id: pin
+        shell: bash
+        run: |
+          source core3/pin
+          echo "repo=${CORE3_REPO#https://github.com/}" >> "$GITHUB_OUTPUT"
+          echo "commit=$CORE3_COMMIT" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.pin.outputs.repo }}
+          ref: ${{ steps.pin.outputs.commit }}
+          # Not "Core3" (Windows paths ignore case, and this repo has core3/), and no "src/" in the
+          # name: Core3's CMake maps every "src/" in a .idl path to "src/autogen/"
+          path: core3-checkout
+          submodules: true
+
+      - name: Apply patches
+        shell: bash
+        run: core3/apply-patches.sh core3-checkout
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      # restore + save (not actions/cache) so the slow library builds are kept even when Core3 fails
+      - name: Restore vcpkg packages
+        id: vcpkg-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: vcpkg-cache
+          key: vcpkg-${{ hashFiles('core3/windows/vcpkg.json') }}-v1
+          # A changed manifest still starts from the last cache; vcpkg only builds what is new
+          restore-keys: vcpkg-
+
+      - name: Restore Lua
+        id: lua-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: lua
+          key: lua-${{ env.LUA_VERSION }}-md-v1
+
+      - name: Build Lua ${{ env.LUA_VERSION }}
+        if: steps.lua-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest "https://www.lua.org/ftp/lua-$env:LUA_VERSION.tar.gz" -OutFile lua.tar.gz
+          tar xzf lua.tar.gz
+          New-Item -ItemType Directory -Force lua/include, lua/lib | Out-Null
+          Push-Location "lua-$env:LUA_VERSION/src"
+          # Same defines as Lua's own makefile (LUA_COMPAT_5_2), dynamic CRT like the vcpkg libraries
+          cl /nologo /c /O2 /MD /DLUA_COMPAT_5_2 *.c
+          Remove-Item lua.obj, luac.obj
+          lib /nologo /OUT:..\..\lua\lib\lua53.lib *.obj
+          Copy-Item lua.h, luaconf.h, lualib.h, lauxlib.h, lua.hpp ..\..\lua\include\
+          Pop-Location
+
+      - name: Save Lua
+        if: steps.lua-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: lua
+          key: lua-${{ env.LUA_VERSION }}-md-v1
+
+      - name: Install vcpkg libraries
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install --triplet x64-windows `
+            --x-manifest-root=core3/windows --x-install-root=vcpkg_installed
+          if ($LASTEXITCODE -ne 0) { throw "vcpkg install failed" }
+          Get-ChildItem vcpkg_installed/x64-windows/lib -Filter *.lib | Select-Object -ExpandProperty Name
+
+      - name: Save vcpkg packages
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: vcpkg-cache
+          key: vcpkg-${{ hashFiles('core3/windows/vcpkg.json') }}-v1
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          $vcpkg = "$env:GITHUB_WORKSPACE/vcpkg_installed/x64-windows"
+          $db = Get-ChildItem "$vcpkg/lib" -Filter "libdb*.lib" | Select-Object -First 1
+          if (-not $db) { throw "Berkeley DB library not found" }
+          # CLANGXX_EXECUTABLE_PATH=OFF stops Core3 from picking Visual Studio's bundled clang; build with cl
+          cmake -S core3-checkout/MMOCoreORB -B core3-checkout/MMOCoreORB/build/win -G Ninja `
+            -DCLANGXX_EXECUTABLE_PATH=OFF -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl `
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows `
+            -DVCPKG_INSTALLED_DIR="$env:GITHUB_WORKSPACE/vcpkg_installed" `
+            -DVCPKG_MANIFEST_MODE=OFF `
+            -DENABLE_MYSQL=OFF -DENABLE_SQLITE=ON `
+            -DCOMPILE_TESTS=OFF -DENABLE_BUILD_CLIENT=OFF -DENABLE_CCACHE=OFF `
+            -DLUA_INCLUDE_DIR="$env:GITHUB_WORKSPACE/lua/include" `
+            -DLUA_LIBRARY="$env:GITHUB_WORKSPACE/lua/lib/lua53.lib" `
+            -DDB_INCLUDE_DIR="$vcpkg/include" `
+            -DDB_LIBRARIES="$($db.FullName)"
+          if ($LASTEXITCODE -ne 0) { throw "cmake configure failed" }
+
+      - name: Build
+        shell: pwsh
+        run: |
+          # -k 0: keep going so one run reports every compile error
+          cmd /c "ninja -C core3-checkout/MMOCoreORB/build/win -k 0 core3 > build.log 2>&1"
+          $status = $LASTEXITCODE
+          $errors = Select-String -Path build.log -Pattern "error C\d+|error LNK\d+|fatal error|FAILED:" | Select-Object -First 300
+          if ($errors) {
+            "## Build errors (first 300)" >> $env:GITHUB_STEP_SUMMARY
+            '```' >> $env:GITHUB_STEP_SUMMARY
+            $errors | ForEach-Object { $_.Line } >> $env:GITHUB_STEP_SUMMARY
+            '```' >> $env:GITHUB_STEP_SUMMARY
+          }
+          Get-Content build.log -Tail 40
+          if ($status -ne 0) {
+            # Per failed file: its errors and MSVC's "see reference to ... being compiled" chain
+            Write-Host "===== failed files ====="
+            $block = 0; $shown = 0
+            foreach ($line in Get-Content build.log) {
+              if ($line -match '^FAILED: ') {
+                $block++; $shown = 0
+                if ($block -le 60) { Write-Host ($line -replace '^FAILED: \[code=\d+\] ', '>> ') }
+              } elseif ($block -ge 1 -and $block -le 60 -and $shown -lt 6 -and
+                        $line -match 'error C\d+|fatal error|see reference to|while compiling') {
+                $text = '   ' + ($line -replace '^.*?([^\\/]+\(\d+\)\s*:)', '$1')
+                if ($text.Length -gt 300) { $text = $text.Substring(0, 300) }
+                Write-Host $text
+                $shown++
+              }
+            }
+            # One line per distinct error, last in the log so it is easy to fetch
+            Write-Host "===== distinct errors ====="
+            Select-String -Path build.log -Pattern "error C\d+|error LNK\d+|fatal error" |
+              ForEach-Object { $_.Line -replace '^.*?([^\\/]+\(\d+\)\s*:)', '$1' } | Sort-Object -Unique | Select-Object -First 200
+            throw "build failed ($status)"
+          }
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: ignore
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $out = "dist/core3-windows"
+          New-Item -ItemType Directory -Force $out | Out-Null
+          Copy-Item -Recurse core3-checkout/MMOCoreORB/bin/* $out
+          Copy-Item core3-checkout/MMOCoreORB/build/win/src/core3.exe $out
+          Copy-Item vcpkg_installed/x64-windows/bin/*.dll $out
+          Get-ChildItem core3-checkout/MMOCoreORB/build/win/src -Filter *.dll | Copy-Item -Destination $out
+          Copy-Item core3-checkout/MMOCoreORB/build/win/src/core3.pdb $out -ErrorAction SilentlyContinue
+          Get-ChildItem $out -Filter *.dll | Select-Object -ExpandProperty Name
+
+      - name: Smoke test (database only, no TREs)
+        shell: pwsh
+        working-directory: dist/core3-windows
+        run: |
+          # Login server only, on SQLite, with stdin at end of file: the exe must start, create its
+          # database, reach READY, then (ShutdownOnConsoleEOF) save and close by itself.
+          @'
+          DBType = "sqlite"
+          MakeZone = 0
+          MakeStatus = 0
+          MakePing = 0
+          MakeWeb = 0
+          MantisHost = ""
+          ShutdownOnConsoleEOF = 1
+          '@ | Set-Content conf/config-local.lua
+          New-Item -ItemType File smoke.in | Out-Null
+          $env:CORE3_BIND_ADDRESS = "127.0.0.1"
+          $p = Start-Process -FilePath .\core3.exe -RedirectStandardInput smoke.in -RedirectStandardOutput smoke.log -RedirectStandardError smoke.err -PassThru -NoNewWindow
+          $closed = $false
+          for ($i = 0; $i -lt 180; $i++) {
+            Start-Sleep 1
+            if ((Get-Content smoke.log -Raw -ErrorAction SilentlyContinue) -match "\] server closed") { $closed = $true; break }
+            if ($p.HasExited) { break }
+          }
+          $log = Get-Content smoke.log -Raw -ErrorAction SilentlyContinue
+          ($log -split "`n" | Where-Object { $_ -notmatch "TreeFile|Loading templates" }) -join "`n" | Write-Host
+          Get-Content smoke.err -Tail 20 -ErrorAction SilentlyContinue
+          # Core3 may stay parked after "server closed" (the launcher stops it the same way)
+          if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
+          $p.WaitForExit(30000) | Out-Null
+          $ready = $log -match "(?m)^READY"
+          $sqlite = $log -match "creating schema version"
+          # Leave the package as it was: no config, empty databases and logs
+          Remove-Item conf/config-local.lua, smoke.in, smoke.log, smoke.err -ErrorAction SilentlyContinue
+          Get-ChildItem databases, log -Recurse -File | Where-Object Name -ne ".gitignore" | Remove-Item
+          if (-not $sqlite) { throw "core3.exe did not create its SQLite database" }
+          if (-not $ready) { throw "core3.exe did not reach READY" }
+          if (-not $closed) { throw "core3.exe did not save and close after its console input ended" }
+
+      # The installer is built here, from the package on disk: handing the 188 MB package to a
+      # separate job through an artifact failed to download repeatedly.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Test launcher on Windows
+        working-directory: launcher
+        run: python -m unittest discover -s tests -t . -v
+
+      - name: Build SWGOffline.exe
+        working-directory: launcher
+        run: |
+          python -m pip install --upgrade pyinstaller
+          python -m PyInstaller --noconfirm --onefile --windowed --name SWGOffline --distpath ..\launcher-dist swg_offline_app.py
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup --no-progress -y
+          }
+          $version = "0.1.0-" + "${{ github.sha }}".Substring(0, 7)
+          & $iscc /Qp "/DAppVersion=$version" "/DLauncherExe=$env:GITHUB_WORKSPACE\launcher-dist\SWGOffline.exe" `
+            "/DServerDir=$env:GITHUB_WORKSPACE\dist\core3-windows" "/O$env:GITHUB_WORKSPACE\installer" windows\installer.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+          Get-ChildItem installer | Format-Table Name, Length
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: SWGOffline-Setup
+          path: installer/*.exe
+
+      - name: Upload core3-windows
+        uses: actions/upload-artifact@v4
+        with:
+          name: core3-windows
+          path: dist/core3-windows

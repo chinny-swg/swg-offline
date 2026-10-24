@@ -1,0 +1,47 @@
+Windows has no strptime(): Time::fromISO8601 reads the same fields with sscanf and converts
+them as UTC with _mkgmtime (the old mktime - _timezone fallback ignored daylight saving).
+
+diff --git a/MMOEngine/src/system/lang/Time.h b/MMOEngine/src/system/lang/Time.h
+index df58875..1831e8b 100755
+--- a/MMOEngine/src/system/lang/Time.h
++++ b/MMOEngine/src/system/lang/Time.h
+@@ -16,6 +16,7 @@
+ #include <windef.h>
+ #include <pthread.h>
+ #include <ctime>
++#include <cstdio>
+ #endif
+ 
+ #include "String.h"
+@@ -312,6 +313,7 @@ namespace sys {
+ 
+ 			// Parse ISO 8601 basic format: "2025-10-03T10:25:30" (with optional Z or timezone)
+ 			// Note: This handles the basic format, not all ISO 8601 variations
++#ifndef PLATFORM_WIN
+ 			char* result = strptime(str, "%Y-%m-%dT%H:%M:%S", &tm);
+ 
+ 			if (result == nullptr) {
+@@ -319,13 +321,19 @@ namespace sys {
+ 				return Time(0);
+ 			}
+ 
+-#ifndef PLATFORM_WIN
+ 			// Use timegm() for UTC conversion (GNU extension, available on Linux/BSD)
+ 			time_t timestamp = timegm(&tm);
+ #else
+-			// Windows fallback: use mktime and adjust for timezone
+-			time_t timestamp = mktime(&tm);
+-			timestamp -= _timezone;
++			// No strptime on Windows: read the same fields, then convert as UTC
++			if (sscanf(str, "%d-%d-%dT%d:%d:%d", &tm.tm_year, &tm.tm_mon, &tm.tm_mday,
++					&tm.tm_hour, &tm.tm_min, &tm.tm_sec) != 6) {
++				return Time(0);
++			}
++
++			tm.tm_year -= 1900;
++			tm.tm_mon -= 1;
++
++			time_t timestamp = _mkgmtime(&tm);
+ #endif
+ 
+ 			if (timestamp == -1) {

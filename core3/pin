@@ -1,0 +1,5 @@
+# Core3 commit swg-offline builds, with patches/ applied on top. engine3 comes from that commit's
+# submodule pointer. To upgrade: bump CORE3_COMMIT, run ./apply-patches.sh on a fresh checkout and
+# refresh any patch that no longer applies.
+CORE3_REPO=https://github.com/chinny-swg/Core3
+CORE3_COMMIT=403893d9b9f8e6fa712fbb3cb1fcd8f0fe45bb79
