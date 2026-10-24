@@ -3,9 +3,22 @@ MSVC: generated headers include the full types they hold in Reference<> members.
 Reference<T> has a virtual destructor, and MSVC instantiates a class template's virtual functions
 as soon as the class is instantiated, so a member like Optional<SortedVector<ManagedReference<
 ActiveAreaPOD*>>> needs ActiveAreaPOD complete in every file that includes the header. GCC defers
-that, so these imports were enough there. Switch the five that broke the MSVC build from import
+that, so these imports were enough there. Switch the six that broke the MSVC build from import
 (forward declaration) to include. None of the included headers pulls its includer back in.
 
+diff --git a/MMOCoreORB/src/server/zone/managers/creature/observers/CreatureHerdObserver.idl b/MMOCoreORB/src/server/zone/managers/creature/observers/CreatureHerdObserver.idl
+index 9cf168ac18..8fad8e1d93 100644
+--- a/MMOCoreORB/src/server/zone/managers/creature/observers/CreatureHerdObserver.idl
++++ b/MMOCoreORB/src/server/zone/managers/creature/observers/CreatureHerdObserver.idl
+@@ -5,7 +5,7 @@
+ 
+ package server.zone.managers.creature.observers;
+ 
+-import server.zone.objects.creature.ai.AiAgent;
++include server.zone.objects.creature.ai.AiAgent;
+ import server.zone.objects.scene.SceneObject;
+ import server.zone.objects.tangible.TangibleObject;
+ import engine.core.ManagedObject;
 diff --git a/MMOCoreORB/src/server/zone/managers/minigames/GamblingManager.idl b/MMOCoreORB/src/server/zone/managers/minigames/GamblingManager.idl
 index 30360307cd..7d2f153acf 100644
 --- a/MMOCoreORB/src/server/zone/managers/minigames/GamblingManager.idl
