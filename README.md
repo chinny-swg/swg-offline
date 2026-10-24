@@ -123,7 +123,7 @@ To add or change a preset, edit `PRESETS` in `launcher/swg_offline/presets.py`.
 | `core3/0006-windows-build-fixes` | `uint` → `uint32`, a stale Windows-only branch in `PlanetTravelPointList`, portable `mkdir` |
 | `engine3/0001-opt-in-bind-address` | `CORE3_BIND_ADDRESS`: listen on one address only |
 | `engine3/0002-windows-fromiso8601` | Windows has no `strptime()`; parse ISO 8601 times without it |
-| `engine3/0003-msvc-build-fixes` | MSVC: 64-bit detection, `__PRETTY_FUNCTION__`, `libgen.h`, a missing `<sstream>` |
+| `engine3/0003-msvc-build-fixes` | MSVC: 64-bit detection, `__PRETTY_FUNCTION__`, `libgen.h`, a missing `<sstream>`, `optional` with forward-declared types |
 
 To move to a newer Core3, change `CORE3_COMMIT`, run the script on a fresh checkout, and refresh
 any patch that no longer applies (`--reverse` takes the series back out).
