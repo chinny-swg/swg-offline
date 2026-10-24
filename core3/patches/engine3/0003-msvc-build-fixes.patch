@@ -5,8 +5,6 @@ MSVC build fixes in engine3:
   both / and \.
 - String.cpp: include <sstream> for std::ostringstream (MSVC does not pull it in indirectly).
 - ProtectedHeap.cpp: go through intptr_t when casting a pointer to off_t (32-bit long on Windows).
-- optional.hpp: on MSVC, class types skip is_trivially_destructible, which MSVC answers by
-  instantiating the destructor and so needs types Core3's generated headers only forward-declare.
 
 diff --git a/MMOEngine/src/system/io/File.cpp b/MMOEngine/src/system/io/File.cpp
 index 7f2fc05..468e454 100755
@@ -127,31 +125,3 @@ index 8e283d7..8be573a 100755
  #pragma warning (disable : 4018)
  #pragma warning (disable : 4800)
  #pragma warning (disable : 4244)
-diff --git a/MMOEngine/src/system/util/optional.hpp b/MMOEngine/src/system/util/optional.hpp
-index 0130ef2..a0dd121 100644
---- a/MMOEngine/src/system/util/optional.hpp
-+++ b/MMOEngine/src/system/util/optional.hpp
-@@ -352,9 +352,22 @@ struct constexpr_optional_base
-     ~constexpr_optional_base() = default;
- };
- 
-+#ifdef _MSC_VER
-+// MSVC answers is_trivially_destructible for a class by instantiating its destructor, which needs
-+// every member type complete. Core3's generated POD classes hold Optional<container of references>
-+// to types they only forward-declare, so on MSVC class types skip the question and use the
-+// non-trivial base; std::conditional keeps the trait from being evaluated for them at all.
-+template <class T>
-+using optional_trivial_destructor = typename std::conditional<
-+    std::is_class<T>::value, std::false_type, is_trivially_destructible<T>>::type;
-+#else
-+template <class T>
-+using optional_trivial_destructor = is_trivially_destructible<T>;
-+#endif
-+
- template <class T>
- using OptionalBase = typename std::conditional<
--    is_trivially_destructible<T>::value,                          // if possible
-+    optional_trivial_destructor<T>::value,                        // if possible
-     constexpr_optional_base<typename std::remove_const<T>::type>, // use base with trivial destructor
-     optional_base<typename std::remove_const<T>::type>
- >::type;

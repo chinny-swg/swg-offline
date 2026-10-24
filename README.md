@@ -121,9 +121,10 @@ To add or change a preset, edit `PRESETS` in `launcher/swg_offline/presets.py`.
 | `core3/0004-shutdown-on-console-eof` | `ShutdownOnConsoleEOF`: save and stop when the launcher goes away |
 | `core3/0005-sqlite-unit-tests` | gtest coverage for the SQLite backend |
 | `core3/0006-windows-build-fixes` | `uint` → `uint32`, a stale Windows-only branch in `PlanetTravelPointList`, portable `mkdir` |
+| `core3/0007-msvc-full-types-in-generated-headers` | MSVC needs the full types behind `Reference<>` members, so five generated headers include instead of forward-declare |
 | `engine3/0001-opt-in-bind-address` | `CORE3_BIND_ADDRESS`: listen on one address only |
 | `engine3/0002-windows-fromiso8601` | Windows has no `strptime()`; parse ISO 8601 times without it |
-| `engine3/0003-msvc-build-fixes` | MSVC: 64-bit detection, `__PRETTY_FUNCTION__`, `libgen.h`, a missing `<sstream>`, `optional` with forward-declared types |
+| `engine3/0003-msvc-build-fixes` | MSVC: 64-bit detection, `__PRETTY_FUNCTION__`, `libgen.h`, a missing `<sstream>` |
 
 To move to a newer Core3, change `CORE3_COMMIT`, run the script on a fresh checkout, and refresh
 any patch that no longer applies (`--reverse` takes the series back out).
