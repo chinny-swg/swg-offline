@@ -24,7 +24,7 @@ patches in [`core3/`](core3/) applied at build time; the Core3 fork itself is ne
 | Database | SQLite file, no database server | MariaDB |
 | Setup | Run `SWGOffline-Setup.exe` | `windows\install.bat` (builds Core3, takes a while) |
 | Extra installs | None | WSL2 |
-| Status | Built by CI; not yet played end to end | Phases 1–2 of the report |
+| Status | Built and smoke-tested by CI (starts on SQLite, saves, shuts down); not yet played end to end | Tested end to end on Linux with MariaDB; not yet run under WSL |
 
 The launcher uses the native server when `server\core3.exe` sits next to it, else WSL
 (`backend` in the settings).
