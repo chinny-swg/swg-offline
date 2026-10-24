@@ -196,7 +196,8 @@ jobs:
         shell: pwsh
         working-directory: dist/core3-windows
         run: |
-          # Login server only on SQLite: proves the exe starts, creates its database and reaches READY
+          # Login server only, on SQLite, with stdin at end of file: the exe must start, create its
+          # database, reach READY, then (ShutdownOnConsoleEOF) save and close by itself.
           @'
           DBType = "sqlite"
           MakeZone = 0
@@ -204,23 +205,31 @@ jobs:
           MakePing = 0
           MakeWeb = 0
           MantisHost = ""
+          ShutdownOnConsoleEOF = 1
           '@ | Set-Content conf/config-local.lua
           New-Item -ItemType File smoke.in | Out-Null
           $env:CORE3_BIND_ADDRESS = "127.0.0.1"
           $p = Start-Process -FilePath .\core3.exe -RedirectStandardInput smoke.in -RedirectStandardOutput smoke.log -RedirectStandardError smoke.err -PassThru -NoNewWindow
-          $ready = $false
-          for ($i = 0; $i -lt 120; $i++) {
+          $closed = $false
+          for ($i = 0; $i -lt 180; $i++) {
             Start-Sleep 1
-            if ((Get-Content smoke.log -Raw -ErrorAction SilentlyContinue) -match "READY") { $ready = $true; break }
+            if ((Get-Content smoke.log -Raw -ErrorAction SilentlyContinue) -match "\] server closed") { $closed = $true; break }
             if ($p.HasExited) { break }
           }
-          Get-Content smoke.log -Tail 40
-          Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          $log = Get-Content smoke.log -Raw -ErrorAction SilentlyContinue
+          ($log -split "`n" | Where-Object { $_ -notmatch "TreeFile|Loading templates" }) -join "`n" | Write-Host
           Get-Content smoke.err -Tail 20 -ErrorAction SilentlyContinue
+          # Core3 may stay parked after "server closed" (the launcher stops it the same way)
+          if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
+          $p.WaitForExit(30000) | Out-Null
+          $ready = $log -match "(?m)^READY"
+          $sqlite = $log -match "creating schema version"
           # Leave the package as it was: no config, empty databases and logs
           Remove-Item conf/config-local.lua, smoke.in, smoke.log, smoke.err -ErrorAction SilentlyContinue
           Get-ChildItem databases, log -Recurse -File | Where-Object Name -ne ".gitignore" | Remove-Item
+          if (-not $sqlite) { throw "core3.exe did not create its SQLite database" }
           if (-not $ready) { throw "core3.exe did not reach READY" }
+          if (-not $closed) { throw "core3.exe did not save and close after its console input ended" }
 
       - name: Upload core3-windows
         uses: actions/upload-artifact@v4
