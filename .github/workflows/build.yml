@@ -150,6 +150,21 @@ jobs:
           }
           Get-Content build.log -Tail 40
           if ($status -ne 0) {
+            # Per failed file: its errors and MSVC's "see reference to ... being compiled" chain
+            Write-Host "===== failed files ====="
+            $block = 0; $shown = 0
+            foreach ($line in Get-Content build.log) {
+              if ($line -match '^FAILED: ') {
+                $block++; $shown = 0
+                if ($block -le 60) { Write-Host ($line -replace '^FAILED: \[code=\d+\] ', '>> ') }
+              } elseif ($block -ge 1 -and $block -le 60 -and $shown -lt 6 -and
+                        $line -match 'error C\d+|fatal error|see reference to|while compiling') {
+                $text = '   ' + ($line -replace '^.*?([^\\/]+\(\d+\)\s*:)', '$1')
+                if ($text.Length -gt 300) { $text = $text.Substring(0, 300) }
+                Write-Host $text
+                $shown++
+              }
+            }
             # One line per distinct error, last in the log so it is easy to fetch
             Write-Host "===== distinct errors ====="
             Select-String -Path build.log -Pattern "error C\d+|error LNK\d+|fatal error" |

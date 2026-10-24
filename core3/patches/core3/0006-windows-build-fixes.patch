@@ -3,6 +3,8 @@ Windows build fixes in Core3 sources:
 - PlanetTravelPointList: drop a stale PLATFORM_WIN branch that allocated a char* with _malloca
   but then used it as a Vector; Vector<bool> works on every platform.
 - ZoneClientSession: create log/packets with engine3's File::mkpath; Windows mkdir() takes no mode.
+- TravelCouponUseSuiCallback: pass the zero amount as uint32. MSVC accepts false as a null
+  pointer, making TransactionLog(player, code, false) ambiguous; GCC already picked this overload.
 
 diff --git a/MMOCoreORB/src/server/zone/ZoneClientSessionImplementation.cpp b/MMOCoreORB/src/server/zone/ZoneClientSessionImplementation.cpp
 index 98d198d376..597856eb9e 100644
@@ -56,6 +58,19 @@ index 4c533fc1a5..151757f615 100644
  
  		runlock();
  	}
+diff --git a/MMOCoreORB/src/server/zone/objects/player/sui/callbacks/TravelCouponUseSuiCallback.h b/MMOCoreORB/src/server/zone/objects/player/sui/callbacks/TravelCouponUseSuiCallback.h
+index f06c0e9751..b5b90d9c45 100644
+--- a/MMOCoreORB/src/server/zone/objects/player/sui/callbacks/TravelCouponUseSuiCallback.h
++++ b/MMOCoreORB/src/server/zone/objects/player/sui/callbacks/TravelCouponUseSuiCallback.h
+@@ -107,7 +107,7 @@ public:
+ 				trx.commit();
+ 			}
+ 		} else {
+-			TransactionLog trx(player, TrxCode::TRAVELSYSTEM, false);
++			TransactionLog trx(player, TrxCode::TRAVELSYSTEM, static_cast<uint32>(0)); // amount 0; "false" is ambiguous with the SceneObject* overload on MSVC
+ 			trx.addState("departurePlanet", departurePlanet);
+ 			trx.addState("departurePoint", departurePoint);
+ 			trx.addState("arrivalPlanet", arrivalPlanet);
 diff --git a/MMOCoreORB/src/server/zone/objects/tangible/tool/componentanalysis/ComponentAnalysisToolImplementation.cpp b/MMOCoreORB/src/server/zone/objects/tangible/tool/componentanalysis/ComponentAnalysisToolImplementation.cpp
 index 795c5be37f..d253c8f7c7 100644
 --- a/MMOCoreORB/src/server/zone/objects/tangible/tool/componentanalysis/ComponentAnalysisToolImplementation.cpp
