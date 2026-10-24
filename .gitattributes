@@ -4,3 +4,5 @@ server/wsl/* text eol=lf
 *.cmd text eol=crlf
 *.patch -text
 core3/pin text eol=lf
+*.iss text eol=crlf
+windows/*.txt text eol=crlf

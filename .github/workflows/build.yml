@@ -231,23 +231,8 @@ jobs:
           if (-not $ready) { throw "core3.exe did not reach READY" }
           if (-not $closed) { throw "core3.exe did not save and close after its console input ended" }
 
-      - name: Upload core3-windows
-        uses: actions/upload-artifact@v4
-        with:
-          name: core3-windows
-          path: dist/core3-windows
-
-  installer:
-    needs: [launcher-tests, core3]
-    runs-on: windows-2022
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: core3-windows
-          path: core3-windows
-
+      # The installer is built here, from the package on disk: handing the 188 MB package to a
+      # separate job through an artifact failed to download repeatedly.
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -271,7 +256,7 @@ jobs:
           }
           $version = "0.1.0-" + "${{ github.sha }}".Substring(0, 7)
           & $iscc /Qp "/DAppVersion=$version" "/DLauncherExe=$env:GITHUB_WORKSPACE\launcher-dist\SWGOffline.exe" `
-            "/DServerDir=$env:GITHUB_WORKSPACE\core3-windows" "/O$env:GITHUB_WORKSPACE\installer" windows\installer.iss
+            "/DServerDir=$env:GITHUB_WORKSPACE\dist\core3-windows" "/O$env:GITHUB_WORKSPACE\installer" windows\installer.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
           Get-ChildItem installer | Format-Table Name, Length
 
@@ -280,3 +265,9 @@ jobs:
         with:
           name: SWGOffline-Setup
           path: installer/*.exe
+
+      - name: Upload core3-windows
+        uses: actions/upload-artifact@v4
+        with:
+          name: core3-windows
+          path: dist/core3-windows
