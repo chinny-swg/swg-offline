@@ -16,6 +16,15 @@ from .settings import ACCOUNT_NAME, Settings
 
 SERVER_EXE = "core3.exe"
 DB_PATH = "databases/swgemu.sqlite3"
+
+# Berkeley DB reads DB_CONFIG from its environment folder (Core3's databases/) when it opens it.
+# The Windows build links vcpkg's Berkeley DB 4.8, whose log region has a fixed size; Core3 opens
+# one handle per database per thread, and registering them all overflowed the default during the
+# first full save ("Logging region out of memory", then ENOMEM, "Not enough space", opening a db).
+# Core3 opens the environment with DB_RECOVER, which rebuilds the region at this size every start.
+DB_CONFIG = """# Written by SWG Offline on every start; edits are overwritten.
+set_lg_regionmax 16777216
+"""
 ADMIN_TRIGGER = "swg_offline_admin"
 
 
@@ -58,8 +67,11 @@ end
 
 
 def install(server_dir: Path, overrides_dir: Path, settings: Settings) -> None:
-    """Puts the rendered preset files and config-local.lua where core3.exe reads them."""
+    """Puts the rendered preset files, config-local.lua and DB_CONFIG where core3.exe reads them."""
     (server_dir / "conf" / "config-local.lua").write_text(local_config(settings), encoding="utf-8", newline="\n")
+    databases = server_dir / "databases"
+    databases.mkdir(exist_ok=True)
+    (databases / "DB_CONFIG").write_text(DB_CONFIG, encoding="ascii", newline="\n")
     shutil.copyfile(overrides_dir / "config-offline.lua", server_dir / "conf" / "config-offline.lua")
     for name in ("player_manager-local.lua", "loot_manager-local.lua"):
         shutil.copyfile(overrides_dir / name, server_dir / "scripts" / "managers" / name)

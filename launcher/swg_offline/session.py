@@ -55,7 +55,7 @@ class Session:
         self.cancelled.set()
 
     def run(self) -> None:
-        login = client.LoginConfig(Path(self.settings.swg_dir))
+        login = client.LoginConfig(Path(self.settings.swg_dir), self.settings.client_exe)
         error = None
         saved = True
         try:
@@ -92,6 +92,11 @@ class Session:
             problems.append(f"Unknown preset '{s.preset}'")
         if problems:
             raise SessionError("\n".join(problems))
+        try:
+            # Before boot, so a folder the client can't be pointed from fails in seconds, not minutes
+            login.prepare()
+        except client.LoginConfigError as e:
+            raise SessionError(str(e))
         preset = presets.PRESETS[s.preset]
         overrides = self.home / "overrides"
         presets.render(preset, s, overrides)

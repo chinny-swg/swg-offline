@@ -1,10 +1,13 @@
 """The player's own SWG client: TRE checks, login config, and starting the game."""
 
+import os
 import re
 import shutil
+import struct
 import subprocess
-from pathlib import Path
-from typing import List
+import tempfile
+from pathlib import Path, PureWindowsPath
+from typing import List, Mapping, Optional
 
 # The Pre-CU 14.1 set Core3's conf/config.lua loads (TreFiles)
 REQUIRED_TRES = [
@@ -25,6 +28,7 @@ REQUIRED_TRES = [
 
 LOGIN_CFG = "swgemu_login.cfg"
 BACKUP_SUFFIX = ".swg-offline-backup"
+CREATED_SUFFIX = ".swg-offline-created"
 
 
 def check_install(swg_dir: Path, client_exe: str) -> List[str]:
@@ -64,29 +68,115 @@ def set_login_server(text: str, address: str, port: int) -> str:
     return "\n".join(lines) + "\n"
 
 
+class LoginConfigError(Exception):
+    pass
+
+
+def is_writable(folder: Path) -> bool:
+    """Tries it: os.access ignores Windows ACLs, so Program Files looks writable to it."""
+    try:
+        with tempfile.TemporaryFile(dir=str(folder)):
+            return True
+    except OSError:
+        return False
+
+
+def virtual_store_dir(folder: Path, environ: Mapping[str, str] = os.environ) -> Optional[Path]:
+    r"""Where UAC file virtualization sends a legacy program's file access in `folder`:
+    C:\Program Files (x86)\SWGEmu -> %LOCALAPPDATA%\VirtualStore\Program Files (x86)\SWGEmu.
+    None when the folder is not under Program Files."""
+    local = environ.get("LOCALAPPDATA")
+    if not local:
+        return None
+    target = PureWindowsPath(str(folder))
+    for var in ("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"):
+        base = environ.get(var) or environ.get(var.upper())
+        if not base:
+            continue
+        base_path = PureWindowsPath(base)
+        if target.drive.lower() == base_path.drive.lower() and \
+                [p.lower() for p in target.parts[:len(base_path.parts)]] == [p.lower() for p in base_path.parts]:
+            return Path(local, "VirtualStore", *target.parts[1:])
+    return None
+
+
+def is_virtualized_exe(exe: Path) -> bool:
+    """True for a 32-bit exe without a UAC manifest: Windows virtualizes its file access, so it
+    reads a file from the VirtualStore before the real one in Program Files."""
+    try:
+        data = exe.read_bytes()
+    except OSError:
+        return False
+    if data[:2] != b"MZ" or len(data) < 0x40:
+        return False
+    pe = struct.unpack_from("<I", data, 0x3C)[0]
+    if data[pe:pe + 4] != b"PE\0\0":
+        return False
+    machine = struct.unpack_from("<H", data, pe + 4)[0]
+    return machine == 0x14C and b"requestedExecutionLevel" not in data
+
+
 class LoginConfig:
     """Rewrites swgemu_login.cfg for the session and puts the player's original back afterwards,
-    so the SWGEmu launcher and online servers keep working."""
+    so the SWGEmu launcher and online servers keep working.
 
-    def __init__(self, swg_dir: Path):
-        self.path = swg_dir / LOGIN_CFG
-        self.backup = swg_dir / (LOGIN_CFG + BACKUP_SUFFIX)
+    SWGEmu usually lives in Program Files, which the launcher cannot write to. Its client is a
+    2005 32-bit exe with no UAC manifest, so Windows looks in the player's VirtualStore first:
+    the session's copy goes there and is removed again afterwards."""
+
+    def __init__(self, swg_dir: Path, client_exe: str = "SWGEmu.exe",
+                 environ: Mapping[str, str] = os.environ):
+        self.swg_dir = swg_dir
+        self.client_exe = client_exe
+        self.environ = environ
+        self._use(swg_dir)
         self._created = False
 
+    def _use(self, folder: Path) -> None:
+        self.path = folder / LOGIN_CFG
+        self.backup = folder / (LOGIN_CFG + BACKUP_SUFFIX)
+        # Marks a file this launcher created, so a crashed session's copy is not kept as the original
+        self.marker = folder / (LOGIN_CFG + CREATED_SUFFIX)
+
+    def prepare(self) -> None:
+        """Decides where the session's login config goes. Raises LoginConfigError if nowhere the
+        client would read it is writable."""
+        if is_writable(self.swg_dir):
+            self._use(self.swg_dir)
+            return
+        virtual = virtual_store_dir(self.swg_dir, self.environ)
+        if virtual is None or not is_virtualized_exe(self.swg_dir / self.client_exe):
+            raise LoginConfigError(
+                f"The launcher can't write to your SWG folder ({self.swg_dir}). Move the folder "
+                "somewhere you own, such as C:\\SWGEmu, and choose it again in Settings.")
+        virtual.mkdir(parents=True, exist_ok=True)
+        self._use(virtual)
+
     def apply(self, address: str, port: int) -> None:
+        if self.marker.exists() and not self.backup.exists():
+            # A previous session crashed after creating this file: it is ours, not the player's
+            self.path.unlink(missing_ok=True)
         # A leftover backup means a previous session crashed; it still holds the original
         if self.path.exists() and not self.backup.exists():
             shutil.copy2(self.path, self.backup)
         self._created = not self.backup.exists()
-        original = self.backup.read_text(encoding="latin-1") if self.backup.exists() else ""
+        if self.backup.exists():
+            original = self.backup.read_text(encoding="latin-1")
+        else:
+            # Nothing at the write location yet (a fresh VirtualStore): start from the real file
+            real = self.swg_dir / LOGIN_CFG
+            original = real.read_text(encoding="latin-1") if real != self.path and real.exists() else ""
+        if self._created:
+            self.marker.touch()
         self.path.write_text(set_login_server(original, address, port), encoding="latin-1", newline="\r\n")
 
     def restore(self) -> None:
         if self.backup.exists():
             shutil.copy2(self.backup, self.path)
             self.backup.unlink()
-        elif self._created and self.path.exists():
+        elif (self._created or self.marker.exists()) and self.path.exists():
             self.path.unlink()
+        self.marker.unlink(missing_ok=True)
 
 
 def start_client(swg_dir: Path, client_exe: str) -> subprocess.Popen:

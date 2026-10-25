@@ -42,12 +42,20 @@ Download `SWGOffline-Setup` from the latest [Build](../../actions/workflows/buil
 artifacts and run it. It installs per user (no admin), asks for your SWG folder and checks it,
 and never copies or ships SOE files: the server reads the TREs in place.
 
+For each session the launcher points the client's `swgemu_login.cfg` at 127.0.0.1, then puts your
+original back. If your SWG folder is in Program Files (SWGEmu's default), you can't write there
+without admin rights, so the session's copy goes to your VirtualStore
+(`%LOCALAPPDATA%\VirtualStore\...`). Windows shows the old 32-bit client that copy first.
+
 The native server:
 
 - uses SQLite (`DBType = "sqlite"`), created on first start in `server\databases\`;
 - listens on 127.0.0.1 only (`CORE3_BIND_ADDRESS`), so nothing outside the PC can connect and
   Windows shows no firewall prompt;
-- saves and shuts down if the launcher goes away (`ShutdownOnConsoleEOF`).
+- saves and shuts down if the launcher goes away (`ShutdownOnConsoleEOF`);
+- gets a `databases\DB_CONFIG` that enlarges Berkeley DB's log region. The Windows build links
+  vcpkg's Berkeley DB 4.8, whose region has a fixed size, and the default overflowed during the
+  first full save.
 
 Saved characters stay in `server\databases\` when you uninstall.
 

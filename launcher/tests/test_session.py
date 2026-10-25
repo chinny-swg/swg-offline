@@ -95,6 +95,14 @@ class SessionTest(unittest.TestCase):
         self.assertEqual(self.stages(), [Stage.CHECKING, Stage.FAILED])
         self.assertFalse(self.commands.exists())
 
+    def test_unwritable_swg_folder_fails_before_starting_server(self):
+        with mock.patch.object(client, "is_writable", return_value=False), \
+                mock.patch.object(client, "virtual_store_dir", return_value=None):
+            self.session().run()
+        self.assertEqual(self.stages(), [Stage.CHECKING, Stage.FAILED])
+        self.assertIn("can't write to your SWG folder", self.statuses[-1][1])
+        self.assertFalse(self.commands.exists())
+
     def test_cancel_while_playing_still_saves(self):
         s = self.session()
         s._start_client = lambda d, e: subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
