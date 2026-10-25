@@ -14,6 +14,12 @@ READY_LINE = "READY"
 CLOSED_SUFFIX = "] server closed"
 CLOSE_GRACE_SECONDS = 5
 
+# Core3's Logger::fatal() logs "[<name>] FATAL - <message>" and then calls abort(). On Windows,
+# abort() can leave the process held open by Windows Error Reporting, so the launcher must not wait
+# for it to exit on its own.
+FATAL_MARKER = "] FATAL - "
+FATAL_GRACE_SECONDS = 10
+
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
@@ -29,6 +35,8 @@ class ServerProcess:
         self.ready = threading.Event()
         self.closed = threading.Event()
         self.exited = threading.Event()
+        self.fatal = threading.Event()
+        self.fatal_line: Optional[str] = None
         self.tail = collections.deque(maxlen=40)
         self._proc: Optional[subprocess.Popen] = None
         self._reader: Optional[threading.Thread] = None
@@ -43,7 +51,8 @@ class ServerProcess:
         self._reader.start()
 
     def _read(self) -> None:
-        with open(self.log_path, "w", encoding="utf-8") as log:
+        # Appends: the session has already started this log with its own notes
+        with open(self.log_path, "a", encoding="utf-8") as log:
             for raw in self._proc.stdout:
                 line = raw.rstrip("\r\n")
                 log.write(line + "\n")
@@ -53,6 +62,9 @@ class ServerProcess:
                     self.ready.set()
                 if line.rstrip().endswith(CLOSED_SUFFIX):
                     self.closed.set()
+                if FATAL_MARKER in line and not self.fatal.is_set():
+                    self.fatal_line = line.strip()
+                    self.fatal.set()
                 if self.on_line:
                     self.on_line(line)
         self._proc.stdout.close()
@@ -68,12 +80,13 @@ class ServerProcess:
         return self._proc.returncode if self._proc else None
 
     def wait_ready(self, timeout: float, cancelled: threading.Event) -> bool:
-        """Blocks until READY, exit, timeout or cancel. True only when the server is ready."""
+        """Blocks until READY, exit, a fatal error, timeout or cancel. True only when the server is
+        ready."""
         waited = 0.0
         while waited < timeout and not cancelled.is_set():
             if self.ready.wait(0.5):
                 return True
-            if self.exited.is_set():
+            if self.exited.is_set() or self.fatal.is_set():
                 return False
             waited += 0.5
         return False
@@ -97,9 +110,17 @@ class ServerProcess:
         except OSError:
             pass  # already gone; under WSL the server side turns stdin EOF into "exit" anyway
         waited = 0.0
-        while waited < timeout and not self.exited.is_set() and not self.closed.is_set():
+        while waited < timeout and not self.exited.is_set() and not self.closed.is_set() \
+                and not self.fatal.is_set():
             self.exited.wait(0.5)
             waited += 0.5
+        if self.fatal.is_set():
+            # The save failed; don't wait out the whole timeout for a process that is aborting
+            self.exited.wait(FATAL_GRACE_SECONDS)
+            if not self.exited.is_set():
+                self._proc.kill()
+                self.exited.wait(10)
+            return False
         if self.exited.is_set():
             return True
         saved = self.closed.is_set()

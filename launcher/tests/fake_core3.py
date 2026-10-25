@@ -3,12 +3,22 @@
 FAKE_CORE3_FAIL=1 makes it die during boot. FAKE_CORE3_LOG=path records the commands it got.
 FAKE_CORE3_SQLITE=path creates an accounts table there before READY, like DBType = "sqlite".
 FAKE_CORE3_HANG=1 stays alive after "server closed", as real Core3 does.
+FAKE_CORE3_FATAL=boot|save logs a Core3 FATAL line at that point and then hangs, like an abort()
+held open by Windows Error Reporting.
 """
 
 import os
 import sys
+import time
 
 log = os.environ.get("FAKE_CORE3_LOG")
+fatal = os.environ.get("FAKE_CORE3_FATAL")
+
+
+def die_fatally():
+    print("[ObjectDatabase missionobjectives.db] FATAL - unable to open database with ret code "
+          "Not enough space", flush=True)
+    time.sleep(600)
 
 
 def record(line):
@@ -32,6 +42,8 @@ if db:
                 " username TEXT NOT NULL, admin_level INTEGER NOT NULL DEFAULT 0)")
     con.commit()
     con.close()
+if fatal == "boot":
+    die_fatally()
 print("[Core] initialized", flush=True)
 print("\nREADY\n> ", end="", flush=True)
 
@@ -39,12 +51,13 @@ for line in sys.stdin:
     cmd = line.strip()
     record(cmd)
     if cmd == "save":
+        if fatal == "save":
+            die_fatally()
         print("saving", flush=True)
     elif cmd == "exit":
         print("[Core] database backup done", flush=True)
         print("[Core] server closed", flush=True)
         if os.environ.get("FAKE_CORE3_HANG"):
-            import time
             time.sleep(600)
         sys.exit(0)
     print("\nREADY\n> ", end="", flush=True)

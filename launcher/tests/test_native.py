@@ -1,6 +1,7 @@
 import contextlib
 import os
 import shutil
+import socket
 import sqlite3
 import sys
 import tempfile
@@ -71,6 +72,42 @@ class NativeTest(unittest.TestCase):
         native.apply_admin(db, "newbie", 0)
         execute(db, "INSERT INTO accounts (username) VALUES ('newbie')")
         self.assertEqual(accounts(db)[-2:], [("newbie", 0), ("newbie", 0)])
+
+    def test_parse_tasklist(self):
+        out = '"core3.exe","5024","Console","1","3,145,728 K"\r\n"Core3.EXE","77","Console","1","10 K"\r\n'
+        self.assertEqual(native.parse_tasklist(out), [5024, 77])
+        self.assertEqual(native.parse_tasklist("INFO: No tasks are running which match the specified criteria."), [])
+
+    def test_port_in_use(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as held:
+            held.bind(("127.0.0.1", 0))
+            port = held.getsockname()[1]
+            self.assertTrue(native.port_in_use("127.0.0.1", port))
+        self.assertFalse(native.port_in_use("127.0.0.1", port))
+
+    def native_session(self, statuses, **settings):
+        swg = make_swg_dir(self.root)
+        server = make_server_dir(self.root)
+        s = Settings(swg_dir=str(swg), server_dir=str(server), backend="native",
+                     boot_timeout_seconds=20, shutdown_timeout_seconds=20, **settings)
+        return Session(s, lambda st, t: statuses.append((st, t)), server_args=FAKE_CORE3,
+                       start_client=FakeClient([]), home=self.root / "home")
+
+    def test_leftover_server_fails_before_starting_another(self):
+        statuses = []
+        with mock.patch.object(native, "running_servers", return_value=[5024]):
+            self.native_session(statuses).run()
+        self.assertEqual([st for st, _ in statuses], [Stage.CHECKING, Stage.FAILED])
+        self.assertIn("PID 5024", statuses[-1][1])
+        self.assertFalse((self.root / "server" / "conf" / "config-local.lua").exists())
+
+    def test_busy_login_port_fails_before_starting_server(self):
+        statuses = []
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as held:
+            held.bind(("127.0.0.1", 0))
+            self.native_session(statuses, login_port=held.getsockname()[1]).run()
+        self.assertEqual([st for st, _ in statuses], [Stage.CHECKING, Stage.FAILED])
+        self.assertIn("already using the login port", statuses[-1][1])
 
     def test_install_json_supplies_swg_dir(self):
         app = self.root / "app"
