@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from swg_offline import client
+from swg_offline import client, server
 from swg_offline.session import Session, Stage
 from swg_offline.settings import Settings
 
@@ -116,6 +116,46 @@ class SessionTest(unittest.TestCase):
         s.client.wait()
         self.assertEqual(self.statuses[-1][0], Stage.DONE)
         self.assertEqual(self.commands.read_text().split(), ["save", "exit"])
+
+    def test_fatal_error_while_saving_stops_without_waiting_out_the_timeout(self):
+        with mock.patch.dict(os.environ, {"FAKE_CORE3_FATAL": "save"}), \
+                mock.patch.object(server, "FATAL_GRACE_SECONDS", 1):
+            started = time.monotonic()
+            s = self.session()
+            s.settings.shutdown_timeout_seconds = 120
+            s.run()
+        stage, text = self.statuses[-1]
+        self.assertEqual(stage, Stage.FAILED)
+        self.assertIn("fatal error while saving", text)
+        self.assertIn("Not enough space", text)
+        self.assertLess(time.monotonic() - started, 30)
+        self.assertTrue(s.server.exited.is_set())
+
+    def test_fatal_error_while_starting_is_reported_at_once(self):
+        with mock.patch.dict(os.environ, {"FAKE_CORE3_FATAL": "boot"}), \
+                mock.patch.object(server, "FATAL_GRACE_SECONDS", 1):
+            started = time.monotonic()
+            s = self.session()
+            s.settings.boot_timeout_seconds = 120
+            s.run()
+        stage, text = self.statuses[-1]
+        self.assertEqual(stage, Stage.FAILED)
+        self.assertIn("fatal error while starting", text)
+        self.assertLess(time.monotonic() - started, 30)
+        self.assertEqual(self.cfg_seen, [])
+
+    def test_each_play_starts_a_new_log_and_keeps_the_last_one(self):
+        self.session().run()
+        (self.swg / "bottom.tre").unlink()
+        self.session().run()  # fails before the server starts
+        log = (self.home / "logs" / "server.log").read_text()
+        previous = (self.home / "logs" / "server.previous.log").read_text()
+        self.assertTrue(log.startswith("[launcher] session started "))
+        self.assertNotIn("READY", log)
+        self.assertIn("[launcher] Failed: ", log)
+        self.assertIn("bottom.tre", log)
+        self.assertIn("READY", previous)
+        self.assertIn("[launcher] Done: Galaxy saved.", previous)
 
 
 if __name__ == "__main__":

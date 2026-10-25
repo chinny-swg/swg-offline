@@ -147,7 +147,14 @@ any patch that no longer applies (`--reverse` takes the series back out).
   restored afterwards. The SWGEmu launcher and online servers keep working.
 - **Clean shutdown.** The server is never killed while it saves unless it overruns
   `shutdown_timeout_seconds` (15 minutes).
-- **Logs.** The server console is written to `%LOCALAPPDATA%\SWGOffline\logs\server.log`.
+- **Logs.** Each Play starts a new `%LOCALAPPDATA%\SWGOffline\logs\server.log`, with the
+  launcher's own steps and errors marked `[launcher]` around the server console. The previous
+  session's log is kept as `server.previous.log`.
+- **A server left running.** Before starting, the launcher checks for a `core3.exe` that is still
+  running, or anything holding the login port, and says so instead of starting a second server.
+- **Fatal errors.** Core3 logs `FATAL - ...` and then aborts. On Windows the process can hang
+  there, so the launcher reports the error and stops it within seconds instead of waiting out the
+  boot or save timeout.
 
 Settings live in `%LOCALAPPDATA%\SWGOffline\settings.json`, which also holds `backend`,
 `server_dir`, `wsl_distro`, `address`, `boot_timeout_seconds` and `space_zones`.

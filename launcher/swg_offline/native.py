@@ -5,8 +5,11 @@ Nothing is copied from the SWG folder: TrePath points straight at it.
 """
 
 import contextlib
+import csv
 import shutil
+import socket
 import sqlite3
+import subprocess
 import sys
 from pathlib import Path, PureWindowsPath
 from typing import List
@@ -39,6 +42,53 @@ def check_server(server_dir: Path) -> List[str]:
         return [f"{SERVER_EXE} not found in {server_dir}"]
     if not (server_dir / "conf" / "config.lua").is_file():
         return [f"{server_dir} is missing conf/config.lua"]
+    return []
+
+
+def parse_tasklist(output: str) -> List[int]:
+    """PIDs from `tasklist /FO CSV /NH` output ("INFO: No tasks..." when there are none)."""
+    pids = []
+    for row in csv.reader(output.splitlines()):
+        if len(row) >= 2 and row[0].lower() == SERVER_EXE and row[1].isdigit():
+            pids.append(int(row[1]))
+    return pids
+
+
+def running_servers() -> List[int]:
+    """PIDs of core3.exe processes, e.g. one left from a session whose save failed."""
+    if sys.platform != "win32":
+        return []
+    try:
+        out = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {SERVER_EXE}", "/FO", "CSV", "/NH"],
+                             capture_output=True, text=True, timeout=15,
+                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return parse_tasklist(out)
+
+
+def port_in_use(address: str, port: int) -> bool:
+    """True when something already holds the UDP login port (SWG's protocol is UDP)."""
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        try:
+            sock.bind((address, port))
+        except OSError:
+            return True
+    return False
+
+
+def check_not_running(address: str, port: int) -> List[str]:
+    """A server that is still up (saving, or stuck after a failed save) would hold the database and
+    the login port, and the new one could not start."""
+    pids = running_servers()
+    if pids:
+        return [f"An SWG Offline server is still running ({SERVER_EXE}, PID "
+                f"{', '.join(map(str, pids))}), probably left over from your last session. Wait a "
+                f"minute in case it is still saving, or end {SERVER_EXE} in Task Manager (Details "
+                "tab), then press Play again."]
+    if port_in_use(address, port):
+        return [f"Something on this PC is already using the login port ({address}:{port}). If it "
+                f"is {SERVER_EXE}, end it in Task Manager (Details tab), then press Play again."]
     return []
 
 

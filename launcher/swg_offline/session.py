@@ -1,5 +1,6 @@
 """One play session: boot the server, run the client, save and stop the server."""
 
+import datetime
 import enum
 import os
 import subprocess
@@ -50,11 +51,44 @@ class Session:
     def server_log(self) -> Path:
         return self.home / "logs" / "server.log"
 
+    @property
+    def previous_log(self) -> Path:
+        return self.home / "logs" / "server.previous.log"
+
+    def _start_log(self) -> None:
+        """A new log for every Play, so an old one is never mistaken for this session's. The last
+        session's log is kept as server.previous.log."""
+        try:
+            self.server_log.parent.mkdir(parents=True, exist_ok=True)
+            if self.server_log.exists():
+                os.replace(self.server_log, self.previous_log)
+        except OSError:
+            # Still open in a launcher left over from the last session: start it afresh in place
+            try:
+                self.server_log.write_text("", encoding="utf-8")
+            except OSError:
+                pass
+        self._note(f"session started {datetime.datetime.now().isoformat(timespec='seconds')}")
+
+    def _note(self, text: str) -> None:
+        """Launcher lines in server.log, between the server's own, marked [launcher]."""
+        try:
+            with open(self.server_log, "a", encoding="utf-8") as log:
+                for line in text.splitlines() or [""]:
+                    log.write(f"[launcher] {line}\n")
+        except OSError:
+            pass
+
+    def _status(self, stage: "Stage", text: str) -> None:
+        self._note(f"{stage.value}: {text}" if text else stage.value)
+        self.status(stage, text)
+
     def cancel(self) -> None:
         """Stops waiting for boot, or ends the session as if the client had closed."""
         self.cancelled.set()
 
     def run(self) -> None:
+        self._start_log()
         login = client.LoginConfig(Path(self.settings.swg_dir), self.settings.client_exe)
         error = None
         saved = True
@@ -67,15 +101,18 @@ class Session:
         finally:
             login.restore()
             if self.server is not None and not self.server.exited.is_set():
-                self.status(Stage.SAVING, "Do not turn off your PC.")
+                self._status(Stage.SAVING, "Do not turn off your PC.")
                 saved = self.server.stop(self.settings.shutdown_timeout_seconds)
 
         if error:
-            self.status(Stage.FAILED, error)
+            self._status(Stage.FAILED, error)
+        elif not saved and self.server.fatal.is_set():
+            self._status(Stage.FAILED, "The server hit a fatal error while saving and was stopped:\n"
+                         + self.server.fatal_line + "\nSee " + str(self.server_log))
         elif not saved:
-            self.status(Stage.FAILED, "The server did not save in time and was stopped. See " + str(self.server_log))
+            self._status(Stage.FAILED, "The server did not save in time and was stopped. See " + str(self.server_log))
         else:
-            self.status(Stage.DONE, "Galaxy saved.")
+            self._status(Stage.DONE, "Galaxy saved.")
 
     def _play(self, login: client.LoginConfig) -> None:
         s = self.settings
@@ -84,7 +121,7 @@ class Session:
         backend = s.resolved_backend()
         server_dir = s.resolved_server_dir()
 
-        self.status(Stage.CHECKING, "")
+        self._status(Stage.CHECKING, "")
         problems = s.validate() + client.check_install(swg_dir, s.client_exe)
         if backend == "native":
             problems += native.check_server(server_dir)
@@ -105,6 +142,9 @@ class Session:
         if backend == "native":
             # Same PC, so UDP on loopback just works; the galaxy row is created with 127.0.0.1
             address = "127.0.0.1"
+            problems = native.check_not_running(address, s.login_port)
+            if problems:
+                raise SessionError("\n".join(problems))
             native.install(server_dir, overrides, s)
             args = self._server_args or [str(server_dir / native.SERVER_EXE)]
             cwd = server_dir
@@ -117,13 +157,15 @@ class Session:
             cwd = None
             env = None
 
-        self.status(Stage.BOOTING, f"{preset.title} · {len(s.zones)} planets · {address}")
+        self._status(Stage.BOOTING, f"{preset.title} · {len(s.zones)} planets · {address}")
         self.server = ServerProcess(args, self.server_log,
                                     on_line=lambda line: self.status(Stage.BOOTING, line), cwd=cwd, env=env)
         self.server.start()
         if not self.server.wait_ready(s.boot_timeout_seconds, self.cancelled):
             if self.cancelled.is_set():
                 raise SessionError("Cancelled.")
+            if self.server.fatal.is_set():
+                raise SessionError("The server hit a fatal error while starting:\n" + self.server.fatal_line)
             if self.server.exited.is_set():
                 raise SessionError("The server stopped while starting:\n"
                                    + "\n".join(list(self.server.tail)[-12:]))
@@ -135,8 +177,10 @@ class Session:
             native.apply_admin(server_dir / native.DB_PATH, s.account, admin_level)
 
         login.apply(address, s.login_port)
-        self.status(Stage.PLAYING, f"Log in as '{s.account}'. Your first login sets its password.")
+        self._status(Stage.PLAYING, f"Log in as '{s.account}'. Your first login sets its password.")
         self.client = self._start_client(swg_dir, s.client_exe)
         while self.client.poll() is None and not self.cancelled.is_set():
+            if self.server.fatal.is_set():
+                raise SessionError("The server hit a fatal error during play:\n" + self.server.fatal_line)
             if self.server.exited.wait(1):
                 raise SessionError("The server stopped during play. See " + str(self.server_log))
