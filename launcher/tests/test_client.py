@@ -1,7 +1,9 @@
 import shutil
+import struct
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from swg_offline import client
 
@@ -58,10 +60,119 @@ class LoginConfigTest(unittest.TestCase):
         login.restore()
         self.assertFalse(self.cfg.exists())
 
+    def test_crashed_session_created_file_is_removed(self):
+        login = client.LoginConfig(self.dir)
+        login.apply("127.0.0.1", 44453)  # no restore: the launcher crashed
+        again = client.LoginConfig(self.dir)
+        again.apply("127.0.0.1", 44453)
+        again.restore()
+        self.assertFalse(self.cfg.exists())
+        self.assertFalse(login.marker.exists())
+
     def test_restore_without_apply_leaves_player_file(self):
         self.cfg.write_text("mine")
         client.LoginConfig(self.dir).restore()
         self.assertEqual(self.cfg.read_text(), "mine")
+
+
+def fake_exe(machine: int, manifest: bool = False) -> bytes:
+    """Just enough of a PE file for is_virtualized_exe: DOS header, PE signature, machine."""
+    data = bytearray(b"MZ" + b"\0" * 0x3A + struct.pack("<I", 0x40))
+    data += b"PE\0\0" + struct.pack("<H", machine) + b"\0" * 32
+    if manifest:
+        data += b'<requestedExecutionLevel level="asInvoker" uiAccess="false"/>'
+    return bytes(data)
+
+
+WINDOWS_ENV = {
+    "LOCALAPPDATA": "/home/u/AppData/Local",
+    "ProgramFiles": "C:\\Program Files",
+    "ProgramFiles(x86)": "C:\\Program Files (x86)",
+}
+
+
+class VirtualStoreTest(unittest.TestCase):
+    def test_program_files_maps_into_virtual_store(self):
+        got = client.virtual_store_dir(Path("C:\\Program Files (x86)\\SWGEmu\\SWGEmu"), WINDOWS_ENV)
+        self.assertEqual(got, Path("/home/u/AppData/Local", "VirtualStore", "Program Files (x86)", "SWGEmu", "SWGEmu"))
+
+    def test_case_is_ignored(self):
+        got = client.virtual_store_dir(Path("c:\\program files (x86)\\SWGEmu"), WINDOWS_ENV)
+        self.assertEqual(got, Path("/home/u/AppData/Local", "VirtualStore", "program files (x86)", "SWGEmu"))
+
+    def test_other_folders_are_not_virtualized(self):
+        self.assertIsNone(client.virtual_store_dir(Path("C:\\SWGEmu"), WINDOWS_ENV))
+        self.assertIsNone(client.virtual_store_dir(Path("D:\\Program Files (x86)\\SWGEmu"), WINDOWS_ENV))
+        self.assertIsNone(client.virtual_store_dir(Path("C:\\Program Files Extra\\SWGEmu"), WINDOWS_ENV))
+
+    def test_only_32_bit_exes_without_manifest_are_virtualized(self):
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d)
+        exe = d / "SWGEmu.exe"
+        exe.write_bytes(fake_exe(0x14C))
+        self.assertTrue(client.is_virtualized_exe(exe))
+        exe.write_bytes(fake_exe(0x14C, manifest=True))
+        self.assertFalse(client.is_virtualized_exe(exe))
+        exe.write_bytes(fake_exe(0x8664))
+        self.assertFalse(client.is_virtualized_exe(exe))
+        exe.write_bytes(b"not an exe")
+        self.assertFalse(client.is_virtualized_exe(exe))
+        self.assertFalse(client.is_virtualized_exe(d / "missing.exe"))
+
+
+class ProtectedFolderTest(unittest.TestCase):
+    """The SWG folder is read-only (Program Files): the config goes to the VirtualStore."""
+
+    def setUp(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root)
+        self.swg = root / "SWGEmu"
+        self.swg.mkdir()
+        self.virtual = root / "VirtualStore" / "SWGEmu"
+        (self.swg / client.LOGIN_CFG).write_bytes(LIVE_CFG.encode())
+        (self.swg / "SWGEmu.exe").write_bytes(fake_exe(0x14C))
+        for target, value in (("is_writable", False), ("virtual_store_dir", self.virtual)):
+            patcher = mock.patch.object(client, target, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_session_copy_goes_to_virtual_store_and_is_removed(self):
+        login = client.LoginConfig(self.swg)
+        login.prepare()
+        login.apply("127.0.0.1", 44453)
+        virtual_cfg = self.virtual / client.LOGIN_CFG
+        text = virtual_cfg.read_bytes()
+        self.assertIn(b"loginServerAddress0=127.0.0.1\r\n", text)
+        self.assertIn(b"foo=1", text)  # built from the player's real file
+        login.restore()
+        self.assertFalse(virtual_cfg.exists())
+        self.assertEqual(list(self.virtual.iterdir()), [])
+        self.assertEqual((self.swg / client.LOGIN_CFG).read_bytes(), LIVE_CFG.encode())
+
+    def test_existing_virtual_copy_is_put_back(self):
+        self.virtual.mkdir(parents=True)
+        (self.virtual / client.LOGIN_CFG).write_text("[ClientGame]\n\tloginServerAddress0=my.server\n")
+        login = client.LoginConfig(self.swg)
+        login.prepare()
+        login.apply("127.0.0.1", 44453)
+        login.restore()
+        self.assertIn("my.server", (self.virtual / client.LOGIN_CFG).read_text())
+
+    def test_crashed_session_copy_is_not_kept(self):
+        login = client.LoginConfig(self.swg)
+        login.prepare()
+        login.apply("127.0.0.1", 44453)  # no restore: the launcher crashed
+        again = client.LoginConfig(self.swg)
+        again.prepare()
+        again.apply("127.0.0.1", 44453)
+        again.restore()
+        self.assertFalse((self.virtual / client.LOGIN_CFG).exists())
+
+    def test_client_that_is_not_virtualized_is_reported(self):
+        (self.swg / "SWGEmu.exe").write_bytes(fake_exe(0x14C, manifest=True))
+        with self.assertRaises(client.LoginConfigError) as e:
+            client.LoginConfig(self.swg).prepare()
+        self.assertIn("C:\\SWGEmu", str(e.exception))
 
 
 class CheckInstallTest(unittest.TestCase):

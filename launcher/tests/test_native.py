@@ -101,6 +101,7 @@ class NativeTest(unittest.TestCase):
         self.assertIn("loginServerAddress0=127.0.0.1", seen[0])
         self.assertIn('DBType = "sqlite"', (server / "conf" / "config-local.lua").read_text())
         self.assertTrue((server / "conf" / "config-offline.lua").exists())
+        self.assertIn("set_lg_regionmax 16777216", (server / "databases" / "DB_CONFIG").read_text())
         self.assertTrue((server / "scripts" / "managers" / "player_manager-local.lua").exists())
         execute(db, "INSERT INTO accounts (username) VALUES ('player')")
         self.assertEqual(accounts(db), [("player", presets.ADMIN_LEVEL)])
