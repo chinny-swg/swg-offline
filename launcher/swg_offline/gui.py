@@ -155,6 +155,10 @@ class LauncherWindow:
         if self.session is None:
             self.root.destroy()
             return
+        if self.session.server is None:
+            # No server yet (still checking, or stuck there): nothing to save, so just close
+            self.root.destroy()
+            return
         if self.stage == Stage.SAVING:
             return  # never interrupt a save
         if messagebox.askyesno("SWG Offline", "Stop the galaxy? It saves before shutting down."):

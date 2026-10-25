@@ -5,7 +5,7 @@ import re
 import shutil
 import struct
 import subprocess
-import tempfile
+import uuid
 from pathlib import Path, PureWindowsPath
 from typing import List, Mapping, Optional
 
@@ -73,12 +73,20 @@ class LoginConfigError(Exception):
 
 
 def is_writable(folder: Path) -> bool:
-    """Tries it: os.access ignores Windows ACLs, so Program Files looks writable to it."""
+    """Tries it, once: os.access ignores Windows ACLs, so Program Files looks writable to it. Not
+    tempfile either: on Windows it takes PermissionError for a name clash and retries up to
+    TMP_MAX (about 2**31) times, which hung the launcher on a Program Files SWG folder."""
+    probe = folder / f".swg-offline-write-test-{os.getpid()}-{uuid.uuid4().hex}"
     try:
-        with tempfile.TemporaryFile(dir=str(folder)):
-            return True
+        fd = os.open(str(probe), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     except OSError:
         return False
+    os.close(fd)
+    try:
+        os.unlink(str(probe))
+    except OSError:
+        pass
+    return True
 
 
 def virtual_store_dir(folder: Path, environ: Mapping[str, str] = os.environ) -> Optional[Path]:

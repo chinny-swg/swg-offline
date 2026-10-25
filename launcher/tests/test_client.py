@@ -120,6 +120,23 @@ class VirtualStoreTest(unittest.TestCase):
         self.assertFalse(client.is_virtualized_exe(d / "missing.exe"))
 
 
+class IsWritableTest(unittest.TestCase):
+    def test_writable_folder_leaves_nothing_behind(self):
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d)
+        self.assertTrue(client.is_writable(d))
+        self.assertEqual(list(d.iterdir()), [])
+
+    def test_permission_denied_is_tried_once(self):
+        # Program Files on Windows: tempfile would retry this up to TMP_MAX (~2**31) times
+        with mock.patch.object(client.os, "open", side_effect=PermissionError(13, "Access is denied")) as opened:
+            self.assertFalse(client.is_writable(Path("C:/Program Files (x86)/SWGEmu/SWGEmu")))
+        self.assertEqual(opened.call_count, 1)
+
+    def test_missing_folder_is_not_writable(self):
+        self.assertFalse(client.is_writable(Path(tempfile.gettempdir()) / "swg-offline-no-such-dir"))
+
+
 class ProtectedFolderTest(unittest.TestCase):
     """The SWG folder is read-only (Program Files): the config goes to the VirtualStore."""
 
